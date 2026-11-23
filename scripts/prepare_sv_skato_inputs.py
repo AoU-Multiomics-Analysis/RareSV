@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 
-COLUMNS = ("chromosome", "pgen", "pvar", "psam", "molecular_traits")
+COLUMNS = ("chromosome", "pgen", "pvar", "psam", "phenotype_bed")
 CHROMOSOME_ALIASES = {"23": "X", "24": "Y", "26": "MT", "M": "MT"}
 
 
@@ -38,7 +38,8 @@ def read_manifest(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
-    parser.add_argument("--cds-gtf", required=True)
+    parser.add_argument("--cds-gtf", help="Use annotated CDS intervals for SV overlap")
+    parser.add_argument("--window-padding-bp", type=int, help="Padding per side for phenotype BED intervals")
     parser.add_argument("--lof-table", required=True)
     parser.add_argument("--docker-image", required=True)
     parser.add_argument("--covariates")
@@ -48,17 +49,22 @@ def main():
     args = parser.parse_args()
     if bool(args.covariates) != bool(args.covariate_columns):
         parser.error("Supply --covariates and --covariate-columns together.")
+    if args.window_padding_bp is not None and not 0 <= args.window_padding_bp <= 2147483647:
+        parser.error("Window padding must be an integer from 0 to 2147483647 bp.")
     try:
         manifest = read_manifest(args.manifest)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     inputs = {
         "sv_skato.chromosome_manifest": manifest,
-        "sv_skato.cds_gtf": args.cds_gtf,
         "sv_skato.lof_table": args.lof_table,
         "sv_skato.docker_image": args.docker_image,
         "sv_skato.fdr_method": args.fdr_method,
     }
+    if args.cds_gtf:
+        inputs["sv_skato.cds_gtf"] = args.cds_gtf
+    if args.window_padding_bp is not None:
+        inputs["sv_skato.window_padding_bp"] = args.window_padding_bp
     if args.covariates:
         inputs["sv_skato.covariates"] = args.covariates
         inputs["sv_skato.covariate_columns"] = args.covariate_columns

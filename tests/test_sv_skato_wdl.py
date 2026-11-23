@@ -48,7 +48,7 @@ def check_commands(document, directory):
     tasks = {task.name: task for task in document.tasks}
     runtime = dict(docker_image="test/image:1", task_memory="2 GB", disk_gb=10)
     uris = {name: f"gs://test/{name}" for name in
-            ("pgen", "pvar", "psam", "molecular_traits", "gtf", "lof", "cov", "chr1", "chr2")}
+            ("pgen", "pvar", "psam", "phenotype_bed", "gtf", "lof", "cov", "chr1", "chr2")}
     paths = {}
     for name, uri in uris.items():
         paths[uri] = directory / f"local {name}'s $quoted file"
@@ -56,27 +56,30 @@ def check_commands(document, directory):
 
     scan = dict(
         runtime,
-        files={**{key: uris[key] for key in ("pgen", "pvar", "psam", "molecular_traits")},
+        files={**{key: uris[key] for key in ("pgen", "pvar", "psam", "phenotype_bed")},
                "chromosome": "chr1"},
         cds_gtf=uris["gtf"],
         lof_table=uris["lof"],
         covariates=uris["cov"],
         covariate_columns="age,PC1",
         lof_missing_as_noncarrier=False,
+        window_padding_bp=250,
         max_alt_af=0.01,
         max_missing=0.05,
     )
     args = render_and_capture(tasks["test_chromosome"], scan, paths, directory)
     assert args[:2] == ["/opt/sv-skato/sv_pgen_workflow.R", "scan"]
     for flag, key in (("pgen", "pgen"), ("pvar", "pvar"), ("psam", "psam"),
-                      ("traits", "molecular_traits"), ("gtf", "gtf"), ("lof", "lof"),
+                      ("phenotype-bed", "phenotype_bed"), ("gtf", "gtf"), ("lof", "lof"),
                       ("covariates", "cov")):
         assert args[args.index("--" + flag) + 1] == str(paths[uris[key]])
     assert "--unknown-unlisted-lof" in args
+    assert args[args.index("--window-padding-bp") + 1] == "250"
     args = render_and_capture(tasks["test_chromosome"],
-                              dict(scan, covariates=None, covariate_columns="", lof_missing_as_noncarrier=True),
+                              dict(scan, cds_gtf=None, covariates=None, covariate_columns="",
+                                   lof_missing_as_noncarrier=True),
                               paths, directory)
-    assert all(flag not in args for flag in ("--covariates", "--covariate-cols", "--unknown-unlisted-lof"))
+    assert all(flag not in args for flag in ("--gtf", "--covariates", "--covariate-cols", "--unknown-unlisted-lof"))
 
     results = [uris["chr1"], uris["chr2"]]
     args = render_and_capture(tasks["gather_results"], dict(runtime, masks=results, fdr_method="BH"),
@@ -89,22 +92,32 @@ def check_commands(document, directory):
 
 def check_manifest(document, directory):
     manifest = directory / "manifest.tsv"
-    header = "chromosome\tpgen\tpvar\tpsam\tmolecular_traits\n"
-    row = "chr1\tgs://test/chr1.pgen\tgs://test/chr1.pvar\tgs://test/chr1.psam\tgs://test/rna.tsv\n"
+    header = "chromosome\tpgen\tpvar\tpsam\tphenotype_bed\n"
+    row = "chr1\tgs://test/chr1.pgen\tgs://test/chr1.pvar\tgs://test/chr1.psam\tgs://test/rna.bed.gz\n"
     manifest.write_text(header + row, encoding="utf-8")
     output = directory / "inputs.json"
     command = [
         sys.executable, str(ROOT / "scripts/prepare_sv_skato_inputs.py"),
-        "--manifest", str(manifest), "--cds-gtf", "gs://test/cds.gtf",
+        "--manifest", str(manifest),
         "--lof-table", "gs://test/lof.tsv", "--docker-image", "test/image:1", "--output", str(output),
     ]
     subprocess.run(command, check=True)
-    values = WDL.values_from_json(json.loads(output.read_text(encoding="utf-8")),
+    inputs = json.loads(output.read_text(encoding="utf-8"))
+    assert "sv_skato.cds_gtf" not in inputs
+    assert "sv_skato.window_padding_bp" not in inputs
+    values = WDL.values_from_json(inputs,
                                   document.workflow.available_inputs, document.workflow.required_inputs,
                                   namespace="sv_skato")
     entry = values["chromosome_manifest"].value[0]
-    assert isinstance(entry.value["molecular_traits"], WDL.Value.File)
-    assert entry.value["molecular_traits"].value == "gs://test/rna.tsv"
+    assert isinstance(entry.value["phenotype_bed"], WDL.Value.File)
+    assert entry.value["phenotype_bed"].value == "gs://test/rna.bed.gz"
+    subprocess.run(command + ["--cds-gtf", "gs://test/cds.gtf", "--window-padding-bp", "0"], check=True)
+    values = WDL.values_from_json(json.loads(output.read_text(encoding="utf-8")),
+                                  document.workflow.available_inputs, document.workflow.required_inputs,
+                                  namespace="sv_skato")
+    assert isinstance(values["cds_gtf"], WDL.Value.File)
+    assert values["cds_gtf"].value == "gs://test/cds.gtf"
+    assert values["window_padding_bp"].value == 0
     manifest.write_text(header + row + row.replace("chr1\t", "1\t", 1), encoding="utf-8")
     duplicate = subprocess.run(command, capture_output=True, text=True)
     assert duplicate.returncode and "repeated chromosome" in duplicate.stderr

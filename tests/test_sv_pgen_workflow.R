@@ -7,7 +7,7 @@ pvar <- tibble(
   ALT = c("<DEL>", "<DUP>", "<DEL>"), INFO = c("END=104", "END=120", "END=140")
 )
 cds <- tibble(gene_id = "g1", chrom = "chr1", start = c(103L, 109L), end = c(104L, 110L))
-links <- .sv_pgen_cds_links(pvar, cds)
+links <- .sv_pgen_interval_links(pvar, cds)
 stopifnot(identical(links$pgen_index, c(1L, 2L)))
 
 samples <- paste0("s", 1:7)
@@ -101,10 +101,43 @@ test_pgen_cli <- function() {
   unresolved <- run("scan", "--pgen", "gs://test/genotypes.pgen")
   stopifnot(attr(unresolved, "status") != 0L,
             any(grepl("Localization error for PGEN: unresolved URI", unresolved, fixed = TRUE)))
+  writeLines("", "input")
+  unresolved <- run("scan", "--pgen", "input", "--pvar", "input", "--psam", "input",
+                    "--phenotype-bed", "gs://test/expression.bed.gz", "--lof", "input")
+  stopifnot(attr(unresolved, "status") != 0L,
+            any(grepl("Localization error for phenotype BED: unresolved URI", unresolved, fixed = TRUE)))
+  unresolved <- run("scan", "--pgen", "input", "--pvar", "input", "--psam", "input",
+                    "--phenotype-bed", "input", "--lof", "input", "--gtf", "gs://test/cds.gtf")
+  stopifnot(attr(unresolved, "status") != 0L,
+            any(grepl("Localization error for CDS GTF: unresolved URI", unresolved, fixed = TRUE)))
   writeLines("gs://test/mask.tsv", "files.txt")
   unresolved <- run("gather", "--mask-list", "files.txt")
   stopifnot(attr(unresolved, "status") != 0L,
             any(grepl("Localization error for mask results: unresolved URI", unresolved, fixed = TRUE)))
 }
 test_pgen_cli()
+
+test_phenotype_bed <- function() {
+  path <- tempfile(fileext = ".bed.gz")
+  on.exit(unlink(path))
+  bed <- tibble(`#chr` = "chr1", start = 0, end = 1, gene_id = "ENSG00000000001.2",
+                `000100` = -1.5, `1000291` = NA_real_)
+  write_tsv(bed, path)
+  parsed <- .sv_pgen_read_phenotype_bed(path, "1")
+  stopifnot(identical(names(parsed), names(bed)), parsed$gene_id == "ENSG00000000001.2",
+            parsed$start == 0, parsed$end == 1, parsed[["000100"]] == -1.5,
+            is.na(parsed[["1000291"]]))
+
+  expect_bed_error <- function(input, message) {
+    write_tsv(input, path)
+    result <- tryCatch(.sv_pgen_read_phenotype_bed(path, "1"), error = conditionMessage)
+    stopifnot(is.character(result), grepl(message, result, fixed = TRUE))
+  }
+  expect_bed_error(select(bed, gene_id, `000100`), "must begin with")
+  expect_bed_error(mutate(bed, `#chr` = "chr2"), "only rows on chromosome")
+  expect_bed_error(mutate(bed, start = -1), "0 <= start < end")
+  expect_bed_error(bind_rows(bed, mutate(bed, gene_id = "ENSG00000000001.3")),
+                   "one row per stable gene ID")
+}
+test_phenotype_bed()
 cat("PASS: CDS overlap, LoF-adjusted mask tests, Cauchy combination, and global FDR.\n")

@@ -5,17 +5,18 @@ struct ChromosomeInputs {
   File pgen
   File pvar
   File psam
-  File molecular_traits
+  File phenotype_bed
 }
 
 workflow sv_skato {
   input {
     Array[ChromosomeInputs]+ chromosome_manifest
-    File cds_gtf
+    File? cds_gtf
     File lof_table
     File? covariates
     String covariate_columns = ""
     Boolean lof_missing_as_noncarrier = true
+    Int window_padding_bp = 1000000
     Float max_alt_af = 0.01
     Float max_missing = 0.05
     String fdr_method = "storey"
@@ -35,6 +36,7 @@ workflow sv_skato {
         covariates = covariates,
         covariate_columns = covariate_columns,
         lof_missing_as_noncarrier = lof_missing_as_noncarrier,
+        window_padding_bp = window_padding_bp,
         max_alt_af = max_alt_af,
         max_missing = max_missing,
         docker_image = docker_image,
@@ -63,11 +65,12 @@ workflow sv_skato {
 task test_chromosome {
   input {
     ChromosomeInputs files
-    File cds_gtf
+    File? cds_gtf
     File lof_table
     File? covariates
     String covariate_columns
     Boolean lof_missing_as_noncarrier
+    Int window_padding_bp
     Float max_alt_af
     Float max_missing
     String docker_image
@@ -79,9 +82,13 @@ task test_chromosome {
     set -euo pipefail
     export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
     chromosome='~{sub(files.chromosome, "'", "'\"'\"'")}'
+    cds_annotation='~{if defined(cds_gtf) then sub(select_first([cds_gtf]), "'", "'\"'\"'") else ""}'
     covariate_file='~{if defined(covariates) then sub(select_first([covariates]), "'", "'\"'\"'") else ""}'
     covariate_names='~{sub(covariate_columns, "'", "'\"'\"'")}'
     extra_args=()
+    if [[ -n "$cds_annotation" ]]; then
+      extra_args+=(--gtf "$cds_annotation")
+    fi
     if [[ -n "$covariate_file" ]]; then
       extra_args+=(--covariates "$covariate_file")
     fi
@@ -98,9 +105,9 @@ task test_chromosome {
       --pgen '~{sub(files.pgen, "'", "'\"'\"'")}' \
       --pvar '~{sub(files.pvar, "'", "'\"'\"'")}' \
       --psam '~{sub(files.psam, "'", "'\"'\"'")}' \
-      --traits '~{sub(files.molecular_traits, "'", "'\"'\"'")}' \
-      --gtf '~{sub(cds_gtf, "'", "'\"'\"'")}' \
+      --phenotype-bed '~{sub(files.phenotype_bed, "'", "'\"'\"'")}' \
       --lof '~{sub(lof_table, "'", "'\"'\"'")}' \
+      --window-padding-bp '~{window_padding_bp}' \
       --max-alt-af '~{max_alt_af}' --max-missing '~{max_missing}' \
       "${extra_args[@]}"
     printf 'Finished chromosome %s\n' "$chromosome" >&2
