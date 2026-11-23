@@ -19,7 +19,7 @@
   path
 }
 
-.sv_pgen_cds_links <- function(pvar, cds) {
+.sv_pgen_interval_links <- function(pvar, intervals) {
   spans <- .sv_cds_spans(pvar) %>%
     mutate(pgen_index = row_number(), chrom = .sv_pgen_chr(CHROM)) %>%
     filter(sv_type %in% c("DEL", "DUP"), !is.na(ALT), !str_detect(ALT, ","))
@@ -32,15 +32,15 @@
             call. = FALSE)
   }
   spans <- filter(spans, span_status == "ok")
-  cds <- mutate(cds, chrom = .sv_pgen_chr(chrom))
-  links <- map(intersect(unique(cds$chrom), unique(spans$chrom)), function(contig) {
-    coding <- filter(cds, chrom == .env$contig)
+  intervals <- mutate(intervals, chrom = .sv_pgen_chr(chrom))
+  links <- map(intersect(unique(intervals$chrom), unique(spans$chrom)), function(contig) {
+    regions <- filter(intervals, chrom == .env$contig)
     variants <- filter(spans, chrom == .env$contig)
     hits <- IRanges::findOverlaps(
-      IRanges::IRanges(coding$start, coding$end),
+      IRanges::IRanges(regions$start, regions$end),
       IRanges::IRanges(variants$affected_start, variants$affected_end)
     )
-    tibble(gene_id = coding$gene_id[S4Vectors::queryHits(hits)],
+    tibble(gene_id = regions$gene_id[S4Vectors::queryHits(hits)],
            pgen_index = variants$pgen_index[S4Vectors::subjectHits(hits)],
            sv_type = variants$sv_type[S4Vectors::subjectHits(hits)])
   })
@@ -48,16 +48,17 @@
     distinct() %>% arrange(gene_id, pgen_index)
 }
 
-.sv_pgen_mask_rows <- function() {
-  tibble(sv_mask = names(.sv_pgen_masks), status = "no_cds_sv", error_message = NA_character_,
+.sv_pgen_mask_rows <- function(empty_status = "no_overlapping_sv") {
+  tibble(sv_mask = names(.sv_pgen_masks), status = empty_status, error_message = NA_character_,
          n_samples = NA_integer_, n_lof_missing = NA_integer_, n_lof_carriers = NA_integer_,
          lof_covariate_used = NA, n_svs_in_mask = 0L, n_svs_eligible = 0L,
          n_svs_tested = 0L, p_value = NA_real_, warnings = NA_character_)
 }
 
 .sv_pgen_test_gene <- function(pheno, Z, sv_types, lof_status, lof_missing_as_noncarrier,
-                               covariates, covariate_cols, max_alt_af, max_missing) {
-  rows <- .sv_pgen_mask_rows()
+                               covariates, covariate_cols, max_alt_af, max_missing,
+                               empty_status = "no_overlapping_sv") {
+  rows <- .sv_pgen_mask_rows(empty_status)
   if (!ncol(Z)) return(rows)
   model <- .sv_model_data(pheno, covariates, covariate_cols)
   model <- .sv_with_lof_covariate(model, lof_status, lof_missing_as_noncarrier)
@@ -112,7 +113,7 @@
 
 .sv_pgen_gene_results <- function(raw, fdr_method = c("storey", "BH")) {
   fdr_method <- match.arg(fdr_method)
-  allowed <- c("ok", "no_cds_sv", "no_eligible_sv", "error")
+  allowed <- c("ok", "no_overlapping_sv", "no_cds_sv", "no_eligible_sv", "error")
   if (anyNA(raw$gene_id) || any(!raw$sv_mask %in% names(.sv_pgen_masks)) ||
       any(!raw$status %in% allowed) || anyDuplicated(raw[c("gene_id", "sv_mask")])) {
     stop("Invalid or duplicate gene-mask rows. Each gene must belong to one chromosome shard.")
@@ -152,12 +153,44 @@
     as_tibble()
 }
 
-.sv_pgen_scan <- function(pgen_path, pvar_path, psam_path, trait_path, gtf_path, lof_path, chromosome,
+.sv_pgen_read_phenotype_bed <- function(path, chromosome) {
+  bed <- readr::read_tsv(path, na = c("", "NA", "NaN", "."), show_col_types = FALSE,
+                         name_repair = "check_unique")
+  if (ncol(bed) < 5L || !tolower(names(bed)[[1L]]) %in% c("#chr", "#chrom") ||
+      !identical(names(bed)[2:4], c("start", "end", "gene_id"))) {
+    stop("The phenotype BED must begin with #chr, start, end, and gene_id, followed by sample columns.")
+  }
+  readr::stop_for_problems(bed)
+  bed_chr <- .sv_pgen_chr(bed[[1L]])
+  if (!nrow(bed) || anyNA(bed_chr) || any(bed_chr != .sv_pgen_chr(chromosome))) {
+    stop("The phenotype BED must contain only rows on chromosome ", chromosome, ".")
+  }
+  start <- bed$start
+  end <- bed$end
+  if (!is.numeric(start) || !is.numeric(end) ||
+      any(!is.finite(start) | !is.finite(end) | start != floor(start) | end != floor(end) |
+          start < 0 | start >= end | end > .Machine$integer.max)) {
+    stop("Phenotype BED coordinates must be integers with 0 <= start < end <= 2147483647.")
+  }
+  ids <- .sv_gene_label(bed$gene_id)
+  if (anyNA(ids) || anyDuplicated(.sv_stable_gene_id(ids))) {
+    stop("Use one row per stable gene ID in the phenotype BED, with no blank gene IDs.")
+  }
+  bed
+}
+
+.sv_pgen_scan <- function(pgen_path, pvar_path, psam_path, phenotype_bed_path, lof_path, chromosome,
+                          gtf_path = NULL, window_padding_bp = 1000000L,
                           covariate_path = NULL, covariate_cols = character(),
                           max_alt_af = 0.01, max_missing = 0.05, lof_missing_as_noncarrier = TRUE) {
   stopifnot(length(chromosome) == 1L, !is.na(chromosome), nzchar(chromosome),
             is.finite(max_alt_af), max_alt_af > 0, max_alt_af <= 1,
             is.finite(max_missing), max_missing >= 0, max_missing <= 1)
+  if (!is.numeric(window_padding_bp) || length(window_padding_bp) != 1L ||
+      !is.finite(window_padding_bp) || window_padding_bp < 0 ||
+      window_padding_bp != floor(window_padding_bp) || window_padding_bp > .Machine$integer.max) {
+    stop("Window padding must be an integer from 0 to 2147483647 bp.")
+  }
   chr <- .sv_pgen_chr(chromosome)
   pvar <- .sv_pgen_read_tsv(pvar_path, skip = "#CHROM")
   if (!all(c("#CHROM", "POS", "ID", "REF", "ALT") %in% names(pvar))) {
@@ -175,29 +208,37 @@
   if ("#IID" %in% names(psam)) psam <- rename(psam, IID = `#IID`)
   if (!"IID" %in% names(psam) || !nrow(psam) || anyNA(.sv_gene_label(psam$IID)) ||
       anyDuplicated(psam$IID)) stop("PSAM must have unique, nonblank IID values.")
-  traits <- .sv_pgen_read_tsv(trait_path, colClasses = list(character = "gene_id"))
-  if (!"gene_id" %in% names(traits)) stop("The molecular trait file needs a gene_id column.")
-  if (anyNA(.sv_gene_label(traits$gene_id))) stop("Molecular trait gene IDs must be nonblank.")
-  sample_index <- which(psam$IID %in% names(traits))
-  if (!length(sample_index)) stop("No PSAM IIDs match molecular trait sample columns.")
+  traits <- .sv_pgen_read_phenotype_bed(phenotype_bed_path, chromosome)
+  score_columns <- setdiff(names(traits)[-(1:4)], "gene_symbol")
+  sample_index <- which(psam$IID %in% score_columns)
+  if (!length(sample_index)) stop("No PSAM IIDs match phenotype BED sample columns.")
   sample_ids <- psam$IID[sample_index]
   trait_keys <- .sv_stable_gene_id(traits$gene_id)
-  cds <- read_cds_gtf(gtf_path) %>%
-    mutate(gene_id = .sv_stable_gene_id(gene_id)) %>%
-    filter(gene_id %in% .env$trait_keys, .sv_pgen_chr(chrom) == .env$chr)
-  selected <- which(trait_keys %in% cds$gene_id)
-  if (!length(selected)) stop("No molecular traits match CDS genes on chromosome ", chromosome, ".")
-  if (anyDuplicated(trait_keys[selected])) stop("Use one molecular trait row per stable gene ID.")
+  intervals <- if (is.null(gtf_path)) {
+    # Pad the BED interval, then convert the left endpoint to a 1-based coordinate.
+    message("Using phenotype BED intervals with ", window_padding_bp, " bp of padding on each side.")
+    tibble(gene_id = trait_keys, chrom = chr,
+           start = pmax(0, traits$start - window_padding_bp) + 1,
+           end = pmin(traits$end + as.double(window_padding_bp), .Machine$integer.max))
+  } else {
+    message("Using CDS intervals from the GTF.")
+    read_cds_gtf(gtf_path) %>%
+      mutate(gene_id = .sv_stable_gene_id(gene_id)) %>%
+      filter(gene_id %in% .env$trait_keys, .sv_pgen_chr(chrom) == .env$chr)
+  }
+  empty_status <- if (is.null(gtf_path)) "no_overlapping_sv" else "no_cds_sv"
+  selected <- which(trait_keys %in% intervals$gene_id)
+  if (!length(selected)) stop("No phenotype BED rows match CDS genes on chromosome ", chromosome, ".")
   symbols <- if ("gene_symbol" %in% names(traits)) .sv_gene_label(traits$gene_symbol) else
     rep(NA_character_, nrow(traits))
-  if ("gene_symbol" %in% names(cds)) {
-    cds_symbols <- cds %>% distinct(gene_id, gene_symbol) %>% filter(!is.na(gene_symbol))
+  if ("gene_symbol" %in% names(intervals)) {
+    cds_symbols <- intervals %>% distinct(gene_id, gene_symbol) %>% filter(!is.na(gene_symbol))
     symbols <- coalesce(symbols, cds_symbols$gene_symbol[match(trait_keys, cds_symbols$gene_id)])
   }
-  links <- .sv_pgen_cds_links(pvar, cds)
+  links <- .sv_pgen_interval_links(pvar, intervals)
   if (anyNA(pvar$ID[links$pgen_index]) || any(pvar$ID[links$pgen_index] %in% c("", ".")) ||
       anyDuplicated(pvar$ID[unique(links$pgen_index)])) {
-    stop("CDS-overlapping SVs must have unique, nonblank PVAR IDs.")
+    stop("Overlapping SVs must have unique, nonblank PVAR IDs.")
   }
   links_by_gene <- split(seq_len(nrow(links)), links$gene_id)
   lof <- .sv_prepare_lof_table(
@@ -222,7 +263,7 @@
   map(selected, function(index) {
     id <- trait_keys[[index]]
     candidate <- links[links_by_gene[[id]], , drop = FALSE]
-    result <- .sv_pgen_mask_rows()
+    result <- .sv_pgen_mask_rows(empty_status)
     if (nrow(candidate)) {
       result <- tryCatch({
         pheno <- suppressMessages(prep_burden_phenotype(
@@ -232,7 +273,7 @@
         dimnames(Z) <- list(sample_ids, pvar$ID[candidate$pgen_index])
         suppressMessages(.sv_pgen_test_gene(
           pheno, Z, candidate$sv_type, lof[lof_by_gene[[id]], , drop = FALSE],
-          lof_missing_as_noncarrier, covariates, covariate_cols, max_alt_af, max_missing
+          lof_missing_as_noncarrier, covariates, covariate_cols, max_alt_af, max_missing, empty_status
         ))
       }, error = function(e) mutate(result, status = "error", error_message = conditionMessage(e)))
     }
@@ -246,8 +287,9 @@
   if (!length(args) || !args[[1L]] %in% c("scan", "gather")) stop("Specify scan or gather.")
   if (args[[1L]] == "scan") {
     options <- list(
-      option("--pgen"), option("--pvar"), option("--psam"), option("--traits"), option("--gtf"),
+      option("--pgen"), option("--pvar"), option("--psam"), option("--phenotype-bed"), option("--gtf"),
       option("--lof"), option("--chromosome"), option("--covariates"), option("--covariate-cols"),
+      option("--window-padding-bp", type = "integer", default = 1000000L),
       option("--max-alt-af", type = "double", default = 0.01),
       option("--max-missing", type = "double", default = 0.05),
       option("--unknown-unlisted-lof", action = "store_true", default = FALSE)
@@ -255,16 +297,18 @@
     opt <- optparse::parse_args(optparse::OptionParser(option_list = options), args = args[-1L],
                                convert_hyphens_to_underscores = TRUE)
     paths <- imap_chr(list(PGEN = opt$pgen, PVAR = opt$pvar, PSAM = opt$psam,
-                           traits = opt$traits, GTF = opt$gtf, LoF = opt$lof), .sv_local_input)
+                           `phenotype BED` = opt$phenotype_bed, LoF = opt$lof), .sv_local_input)
+    gtf_path <- if (!is.null(opt$gtf)) .sv_local_input(opt$gtf, "CDS GTF")
     cov_path <- if (!is.null(opt$covariates)) .sv_local_input(opt$covariates, "covariates")
     cov_cols <- if (!is.null(opt$covariate_cols)) str_trim(str_split_1(opt$covariate_cols, ",")) else character()
     if (xor(!is.null(cov_path), length(cov_cols) > 0L)) {
       stop("Supply both a covariate file and the covariate column names.")
     }
     results <- .sv_pgen_scan(
-      paths[["PGEN"]], paths[["PVAR"]], paths[["PSAM"]], paths[["traits"]], paths[["GTF"]],
-      paths[["LoF"]], opt$chromosome, cov_path, cov_cols, opt$max_alt_af, opt$max_missing,
-      !opt$unknown_unlisted_lof
+      paths[["PGEN"]], paths[["PVAR"]], paths[["PSAM"]], paths[["phenotype BED"]],
+      paths[["LoF"]], opt$chromosome, gtf_path = gtf_path, window_padding_bp = opt$window_padding_bp,
+      covariate_path = cov_path, covariate_cols = cov_cols, max_alt_af = opt$max_alt_af,
+      max_missing = opt$max_missing, lof_missing_as_noncarrier = !opt$unknown_unlisted_lof
     )
     readr::write_tsv(results, "mask_results.tsv")
     message("Wrote ", nrow(results), " gene-mask rows.")
