@@ -1,0 +1,34 @@
+name: SV SKAT-O image smoke test
+
+on:
+  push:
+    paths:
+      - R/sv_set_tests.R
+      - R/sv_pgen_workflow.R
+  pull_request:
+    paths:
+      - R/sv_set_tests.R
+      - R/sv_pgen_workflow.R
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check WDL syntax and localization
+        run: |
+          python3 -m pip install miniwdl==1.14.2
+          miniwdl check wdl/sv_skato.wdl
+          python3 tests/test_sv_skato_wdl.py
+      - name: Build the analysis image
+        run: docker build -f docker/sv-skato/Dockerfile -t sv-skato:smoke .
+      - name: Run synthetic PLINK and SKAT-O checks
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" -w /repo sv-skato:smoke Rscript tests/test_sv_pgen_workflow.R
+          docker run --rm -v "$PWD:/repo:ro" -w /repo sv-skato:smoke Rscript tests/smoke_sv_pgen_workflow.R
