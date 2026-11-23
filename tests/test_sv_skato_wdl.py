@@ -1,4 +1,4 @@
-"""Check workflow-level expressions and render both commands with localized paths."""
+"""Check workflow-level expressions and render commands with localized paths."""
 
 import json
 import os
@@ -24,11 +24,15 @@ class LocalCommandStdLib(WDL.StdLib.Base):
         return filename
 
 
-def render_and_capture(task, inputs, paths, directory):
+def render_command(task, inputs, paths, directory):
     values = WDL.values_from_json(inputs, task.available_inputs, task.required_inputs)
     localized = WDL.Value.rewrite_env_paths(values, lambda value: str(paths[value.value]))
     stdlib = LocalCommandStdLib("1.0", write_dir=str(directory))
-    rendered = task.command.eval(localized, stdlib).value
+    return task.command.eval(localized, stdlib).value
+
+
+def render_and_capture(task, inputs, paths, directory):
+    rendered = render_command(task, inputs, paths, directory)
     capture = directory / "captured.json"
     fake_rscript = directory / "Rscript"
     fake_rscript.write_text(
@@ -44,11 +48,11 @@ def render_and_capture(task, inputs, paths, directory):
     return json.loads(capture.read_text(encoding="utf-8"))
 
 
-def check_commands(document, directory):
+def check_commands(document, directory, files):
     tasks = {task.name: task for task in document.tasks}
     runtime = dict(docker_image="test/image:1", task_memory="2 GB", disk_gb=10)
-    uris = {name: f"gs://test/{name}" for name in
-            ("pgen", "pvar", "psam", "phenotype_bed", "gtf", "lof", "cov", "chr1", "chr2")}
+    uris = {name: f"gs://test/{name}" for name in ("gtf", "lof", "cov", "chr1", "chr2")}
+    uris.update({key: uri for key, uri in files.items() if key != "chromosome"})
     paths = {}
     for name, uri in uris.items():
         paths[uri] = directory / f"local {name}'s $quoted file"
@@ -56,8 +60,7 @@ def check_commands(document, directory):
 
     scan = dict(
         runtime,
-        files={**{key: uris[key] for key in ("pgen", "pvar", "psam", "phenotype_bed")},
-               "chromosome": "chr1"},
+        files=files,
         cds_gtf=uris["gtf"],
         lof_table=uris["lof"],
         covariates=uris["cov"],
@@ -91,36 +94,68 @@ def check_commands(document, directory):
 
 
 def check_manifest(document, directory):
-    manifest = directory / "manifest.tsv"
-    header = "chromosome\tpgen\tpvar\tpsam\tphenotype_bed\n"
-    row = "chr1\tgs://test/chr1.pgen\tgs://test/chr1.pvar\tgs://test/chr1.psam\tgs://test/rna.bed.gz\n"
-    manifest.write_text(header + row, encoding="utf-8")
+    manifest = directory / "chr21 manifest's $quoted path.tsv"
+    uri = "gs://test/chr21_manifest.tsv"
     output = directory / "inputs.json"
     command = [
         sys.executable, str(ROOT / "scripts/prepare_sv_skato_inputs.py"),
-        "--manifest", str(manifest),
-        "--lof-table", "gs://test/lof.tsv", "--docker-image", "test/image:1", "--output", str(output),
+        "--manifest", uri,
+        "--lof-table", "gs://test/lof.tsv", "--output", str(output),
     ]
     subprocess.run(command, check=True)
     inputs = json.loads(output.read_text(encoding="utf-8"))
     assert "sv_skato.cds_gtf" not in inputs
     assert "sv_skato.window_padding_bp" not in inputs
+    assert "sv_skato.docker_image" not in inputs
     values = WDL.values_from_json(inputs,
                                   document.workflow.available_inputs, document.workflow.required_inputs,
                                   namespace="sv_skato")
-    entry = values["chromosome_manifest"].value[0]
-    assert isinstance(entry.value["phenotype_bed"], WDL.Value.File)
-    assert entry.value["phenotype_bed"].value == "gs://test/rna.bed.gz"
-    subprocess.run(command + ["--cds-gtf", "gs://test/cds.gtf", "--window-padding-bp", "0"], check=True)
+    assert isinstance(values["chromosome_manifest"], WDL.Value.File)
+    assert values["chromosome_manifest"].value == uri
+    subprocess.run(command + ["--cds-gtf", "gs://test/cds.gtf", "--window-padding-bp", "0",
+                              "--docker-image", "test/image:2"], check=True)
     values = WDL.values_from_json(json.loads(output.read_text(encoding="utf-8")),
                                   document.workflow.available_inputs, document.workflow.required_inputs,
                                   namespace="sv_skato")
     assert isinstance(values["cds_gtf"], WDL.Value.File)
     assert values["cds_gtf"].value == "gs://test/cds.gtf"
     assert values["window_padding_bp"].value == 0
-    manifest.write_text(header + row + row.replace("chr1\t", "1\t", 1), encoding="utf-8")
-    duplicate = subprocess.run(command, capture_output=True, text=True)
+    assert values["docker_image"].value == "test/image:2"
+    task = next(task for task in document.tasks if task.name == "parse_manifest")
+    inputs = {"manifest": uri, "docker_image": "test/image:1"}
+    rendered = render_command(task, inputs, {uri: manifest}, directory)
+    header = "phenotype_bed\tpsam\tchromosome\tpgen\tpvar\n"
+    row = "gs://test/rna's $file.bed.gz\tgs://test/chr21.psam\tchr21\tgs://test/chr21.pgen\tgs://test/chr21.pvar\n"
+    manifest.write_text("\ufeff" + (header + row).replace("\n", "\r\n"), encoding="utf-8")
+    subprocess.run(["bash", "-c", rendered], cwd=directory, check=True)
+    fields = (directory / "manifest_rows.tsv").read_text(encoding="utf-8").rstrip("\n").split("\t")
+    assert fields == ["chr21", "gs://test/chr21.pgen", "gs://test/chr21.pvar",
+                      "gs://test/chr21.psam", "gs://test/rna's $file.bed.gz"]
+    scatter = next(node for node in document.workflow.body if isinstance(node, WDL.Tree.Scatter))
+    row_value = WDL.Value.Array(WDL.Type.String(), [WDL.Value.String(field) for field in fields])
+    env = WDL.Env.Bindings().bind(scatter.variable, row_value)
+    stdlib = LocalCommandStdLib("1.0", write_dir=str(directory))
+    for declaration in scatter.body:
+        if isinstance(declaration, WDL.Tree.Decl):
+            env = env.bind(declaration.name, declaration.expr.eval(env, stdlib).coerce(declaration.type))
+    entry = env["entry"]
+    for key, uri_value in zip(("pgen", "pvar", "psam", "phenotype_bed"), fields[1:]):
+        assert isinstance(entry.value[key], WDL.Value.File)
+        assert entry.value[key].value == uri_value
+
+    manifest.write_text(header + row + row.replace("\tchr21\t", "\t21\t"), encoding="utf-8")
+    duplicate = subprocess.run(["bash", "-c", rendered], cwd=directory, capture_output=True, text=True)
     assert duplicate.returncode and "repeated chromosome" in duplicate.stderr
+    manifest.write_text(header + row.replace("gs://test/chr21.psam", "/home/rstudio/chr21.psam"), encoding="utf-8")
+    local_uri = subprocess.run(["bash", "-c", rendered], cwd=directory, capture_output=True, text=True)
+    assert local_uri.returncode and "expected a gs:// path for psam" in local_uri.stderr
+    manifest.write_text(header, encoding="utf-8")
+    empty = subprocess.run(["bash", "-c", rendered], cwd=directory, capture_output=True, text=True)
+    assert empty.returncode and "expected at least one chromosome row" in empty.stderr
+    unresolved = render_command(task, inputs, {uri: uri}, directory)
+    result = subprocess.run(["bash", "-c", unresolved], cwd=directory, capture_output=True, text=True)
+    assert result.returncode and "Localization error for chromosome manifest" in result.stderr
+    return entry.json
 
 
 def main():
@@ -129,9 +164,9 @@ def main():
     assert not any(isinstance(node, WDL.Expr.Apply) and node.function_name.startswith("write_")
                    for node in descendants(document.workflow))
     with TemporaryDirectory() as temp:
-        check_commands(document, Path(temp))
-        check_manifest(document, Path(temp))
-    print("PASS: workflow-scope file creation, typed manifest, and both task localization paths.")
+        files = check_manifest(document, Path(temp))
+        check_commands(document, Path(temp), files)
+    print("PASS: workflow-scope file creation, TSV validation, and cloud-to-task file localization.")
 
 
 if __name__ == "__main__":

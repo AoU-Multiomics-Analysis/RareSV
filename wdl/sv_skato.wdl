@@ -10,7 +10,7 @@ struct ChromosomeInputs {
 
 workflow sv_skato {
   input {
-    Array[ChromosomeInputs]+ chromosome_manifest
+    File chromosome_manifest
     File? cds_gtf
     File lof_table
     File? covariates
@@ -20,14 +20,32 @@ workflow sv_skato {
     Float max_alt_af = 0.01
     Float max_missing = 0.05
     String fdr_method = "storey"
-    String docker_image
+    String docker_image = "ghcr.io/aou-multiomics-analysis/raresv:1445dab66366ca6a4178c1d827d41e73fdb6b397"
     String scan_memory = "12 GB"
     Int scan_disk_gb = 100
     String gather_memory = "4 GB"
     Int gather_disk_gb = 20
   }
 
-  scatter (entry in chromosome_manifest) {
+  call parse_manifest {
+    input:
+      manifest = chromosome_manifest,
+      docker_image = docker_image
+  }
+
+  scatter (row in parse_manifest.rows) {
+    File pgen_file = row[1]
+    File pvar_file = row[2]
+    File psam_file = row[3]
+    File phenotype_bed_file = row[4]
+    ChromosomeInputs entry = object {
+      chromosome: row[0],
+      pgen: pgen_file,
+      pvar: pvar_file,
+      psam: psam_file,
+      phenotype_bed: phenotype_bed_file
+    }
+
     call test_chromosome {
       input:
         files = entry,
@@ -59,6 +77,80 @@ workflow sv_skato {
     File mask_results = gather_results.mask_results
     File gene_results = gather_results.gene_results
     File significant_genes = gather_results.significant_genes
+  }
+}
+
+task parse_manifest {
+  input {
+    File manifest
+    String docker_image
+  }
+
+  command <<<
+    set -euo pipefail
+    manifest_file='~{sub(manifest, "'", "'\"'\"'")}'
+    printf 'Reading chromosome manifest\n' >&2
+    if [[ "$manifest_file" == *://* || ! -f "$manifest_file" || ! -r "$manifest_file" ]]; then
+      printf 'Localization error for chromosome manifest: file is not readable: %s\n' "$manifest_file" >&2
+      exit 1
+    fi
+
+    LC_ALL=C awk '
+      BEGIN {
+        FS = OFS = "\t"
+        split("chromosome pgen pvar psam phenotype_bed", columns, " ")
+      }
+      function fail(detail) {
+        print "Invalid chromosome manifest: " detail > "/dev/stderr"
+        failed = 1
+        exit 1
+      }
+      { sub(/\r$/, "") }
+      NR == 1 {
+        sub(/^\357\273\277/, "", $1)
+        if (NF != 5) fail("expected chromosome, pgen, pvar, psam, and phenotype_bed columns")
+        for (i = 1; i <= NF; i++) index_of[$i] = i
+        for (i = 1; i <= 5; i++) {
+          if (!(columns[i] in index_of)) fail("missing column " columns[i])
+        }
+        next
+      }
+      /^[[:space:]]*$/ { next }
+      {
+        if (NF != 5 || /\r/) fail("expected five tab-delimited fields at line " NR)
+        for (i = 1; i <= 5; i++) {
+          value[i] = $(index_of[columns[i]])
+          sub(/^[[:space:]]+/, "", value[i])
+          sub(/[[:space:]]+$/, "", value[i])
+        }
+        key = toupper(value[1])
+        sub(/^CHR/, "", key)
+        if (key == "23") key = "X"
+        if (key == "24") key = "Y"
+        if (key == "26" || key == "M") key = "MT"
+        if (key == "" || seen[key]++) fail("blank or repeated chromosome at line " NR)
+        for (i = 2; i <= 5; i++) {
+          if (value[i] !~ /^gs:\/\/[^\/[:space:]]+\/.+$/) {
+            fail("expected a gs:// path for " columns[i] " at line " NR)
+          }
+        }
+        print value[1], value[2], value[3], value[4], value[5]
+        rows++
+      }
+      END { if (!failed && !rows) fail("expected at least one chromosome row") }
+    ' < "$manifest_file" > manifest_rows.tsv
+    printf 'Validated %s chromosome rows\n' "$(wc -l < manifest_rows.tsv)" >&2
+  >>>
+
+  output {
+    Array[Array[String]] rows = read_tsv("manifest_rows.tsv")
+  }
+
+  runtime {
+    docker: docker_image
+    cpu: 1
+    memory: "2 GB"
+    disks: "local-disk 10 SSD"
   }
 }
 
