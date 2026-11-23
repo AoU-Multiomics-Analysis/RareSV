@@ -1,6 +1,6 @@
-# LoF-adjusted SV SKAT-O on Terra
+# LoF-adjusted SV SKAT-O on Terra and Researcher Workbench
 
-Use [sv_skato.wdl](../wdl/sv_skato.wdl) with the image from [the Dockerfile](../docker/sv-skato/Dockerfile). The WDL uses version 1.0. Supply an image tag or digest that Terra can pull as `docker_image`.
+Use [sv_skato.wdl](../wdl/sv_skato.wdl) with Cromwell. The WDL uses version 1.0 and defaults to the [RareSV image published to GitHub Container Registry](https://github.com/AoU-Multiomics-Analysis/RareSV/actions/runs/45290171941). Set `docker_image` if you need a different image.
 
 ## Prepare the phenotype BED files
 
@@ -29,17 +29,18 @@ chromosome	pgen	pvar	psam	phenotype_bed
 - The shared LoF TSV requires `sample_id`, `gene_id`, and `has_lof_variant`. An omitted gene–participant pair means noncarrier by default. Explicit missing flags are unknown. To model unlisted pairs as unknown, set `lof_missing_as_noncarrier` to `false` in the workflow inputs.
 - Optional fixed covariates use a shared TSV with one row per `sample_id`. Set `covariates` and `covariate_columns` together.
 
-Convert the TSV to workflow inputs with [the manifest converter](../scripts/prepare_sv_skato_inputs.py). The converter creates a typed array for the WDL. Terra localizes the files in each row as explicit `File` inputs.
+Store the TSV in Cloud Storage. In the workflow form, set `chromosome_manifest` to its `gs://` URI. In Researcher Workbench, enter it in **New job → Prepare inputs**. The manifest task checks the header, checks for duplicate chromosomes, and requires a `gs://` URI in each file column. Cromwell localizes each chromosome's data files as explicit `File` inputs for the scan.
+
+For command-line Cromwell submissions, use [the input generator](../scripts/prepare_sv_skato_inputs.py) to write the inputs JSON. The `chromosome_manifest` value is the URI of the TSV.
 
 ```sh
 python3 scripts/prepare_sv_skato_inputs.py \
-  --manifest chromosomes.tsv \
+  --manifest gs://BUCKET/chromosomes.tsv \
   --lof-table gs://BUCKET/lof_carriers.tsv \
-  --docker-image REGISTRY/sv-skato:TAG \
   --output sv_skato.inputs.json
 ```
 
-Add `--covariates gs://BUCKET/covariates.tsv --covariate-columns age,PC1,PC2` if needed. Use the resulting values when you configure the workflow in Terra. Set scan disk and memory to fit the largest chromosome fileset and phenotype BED.
+Add `--covariates gs://BUCKET/covariates.tsv --covariate-columns age,PC1,PC2` if needed. Use `--docker-image` to override the default image. Set scan disk and memory to fit the largest chromosome fileset and phenotype BED.
 
 ## Model and outputs
 
