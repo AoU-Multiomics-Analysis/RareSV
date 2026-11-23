@@ -49,4 +49,6 @@ python3 tests/test_sv_skato_wdl.py
 Rscript tests/test_sv_pgen_workflow.R
 ```
 
-GitHub Actions builds the pinned micromamba image and runs the synthetic PLINK and SKAT-O smoke test when a script copied into the image changes.
+The [SV SKAT-O image workflow](https://github.com/AoU-Multiomics-Analysis/RareSV/actions/workflows/sv-skato-smoke.yml) builds the pinned micromamba image and runs the WDL and synthetic PLINK checks. Automatic builds run when a script copied into the image changes. Successful builds on `main` publish `ghcr.io/aou-multiomics-analysis/raresv:<commit-sha>`. Pull requests run the checks.
+
+For the first image, run the workflow manually on `main`. The run summary gives the image tag to use for `docker_image`. GitHub Container Registry packages are private on first publication. Use a registry reference that your Terra workspace has permission to pull.
