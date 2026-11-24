@@ -9,12 +9,13 @@ workflow sv_skato {
     String covariate_columns = ""
     Boolean lof_missing_as_noncarrier = true
     Boolean missing_pgen_as_reference = false
+    String sv_masks = "DEL,DUP,DEL+DUP"
     Int window_padding_bp = 1000000
     Float max_alt_af = 0.01
     Float max_missing = 0.05
     String fdr_method = "storey"
     Boolean follow_up = true
-    String docker_image = "docker.io/epadhi/raresv:workbench-follow-up-a29862b"
+    String docker_image = "docker.io/epadhi/raresv:workbench-sv-masks-b0cc7fc"
     String scan_memory = "12 GB"
     Int scan_disk_gb = 100
     String gather_memory = "4 GB"
@@ -45,6 +46,7 @@ workflow sv_skato {
         covariate_columns = covariate_columns,
         lof_missing_as_noncarrier = lof_missing_as_noncarrier,
         missing_pgen_as_reference = missing_pgen_as_reference,
+        sv_masks = sv_masks,
         window_padding_bp = window_padding_bp,
         max_alt_af = max_alt_af,
         max_missing = max_missing,
@@ -58,6 +60,7 @@ workflow sv_skato {
     input:
       masks = test_chromosome.results,
       manifest = parse_manifest.parsed_manifest,
+      sv_masks = sv_masks,
       fdr_method = fdr_method,
       docker_image = docker_image,
       task_memory = gather_memory,
@@ -83,6 +86,7 @@ workflow sv_skato {
           covariate_columns = covariate_columns,
           lof_missing_as_noncarrier = lof_missing_as_noncarrier,
           missing_pgen_as_reference = missing_pgen_as_reference,
+          sv_masks = sv_masks,
           window_padding_bp = window_padding_bp,
           max_alt_af = max_alt_af,
           max_missing = max_missing,
@@ -199,6 +203,7 @@ task test_chromosome {
     String covariate_columns
     Boolean lof_missing_as_noncarrier
     Boolean missing_pgen_as_reference
+    String sv_masks
     Int window_padding_bp
     Float max_alt_af
     Float max_missing
@@ -245,6 +250,7 @@ task test_chromosome {
       --psam '~{sub(psam, "'", "'\"'\"'")}' \
       --phenotype-bed '~{sub(phenotype_bed, "'", "'\"'\"'")}' \
       --lof '~{sub(lof_table, "'", "'\"'\"'")}' \
+      --sv-masks '~{sub(sv_masks, "'", "'\"'\"'")}' \
       --window-padding-bp '~{window_padding_bp}' \
       --max-alt-af '~{max_alt_af}' --max-missing '~{max_missing}' \
       "${extra_args[@]}"
@@ -268,6 +274,7 @@ task gather_results {
     Array[File] masks
     File manifest
     String fdr_method
+    String sv_masks
     String docker_image
     String task_memory
     Int disk_gb
@@ -284,9 +291,9 @@ task gather_results {
         exit 1
       fi
       printf "Combining chromosome mask results and applying 5%% FDR across genes\n" >&2
-      Rscript /opt/sv-skato/sv_pgen_workflow.R gather --mask-list "$mask_list" --manifest "$3" --fdr-method "$1"
+      Rscript /opt/sv-skato/sv_pgen_workflow.R gather --mask-list "$mask_list" --manifest "$3" --sv-masks "$4" --fdr-method "$1"
       printf "Finished writing combined gene results\n" >&2
-    ' gather-results '~{sub(fdr_method, "'", "'\"'\"'")}' '~{length(masks)}' '~{sub(manifest, "'", "'\"'\"'")}' <<'RARESV_MASK_PATHS'
+    ' gather-results '~{sub(fdr_method, "'", "'\"'\"'")}' '~{length(masks)}' '~{sub(manifest, "'", "'\"'\"'")}' '~{sub(sv_masks, "'", "'\"'\"'")}' <<'RARESV_MASK_PATHS'
 ~{sep="\n" masks}
 RARESV_MASK_PATHS
   >>>

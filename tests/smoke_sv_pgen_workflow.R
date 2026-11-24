@@ -7,6 +7,7 @@ run_smoke <- function() {
   on.exit(unlink(fixtures, recursive = TRUE), add = TRUE)
   sample_ids <- paste0("s", 1:25)
   gene_ids <- c("ENSG00000000001", "ENSG00000000002")
+  custom_masks <- .sv_pgen_parse_masks("INS,DEL+INS")
   gtf <- file.path(fixtures, "coding.gtf")
   writeLines(sprintf('chr%d\tsmoke\tCDS\t100\t140\t.\t+\t0\tgene_id "%s.1";',
                      1:2, gene_ids), gtf)
@@ -30,8 +31,8 @@ run_smoke <- function() {
     phenotype_bed <- file.path(fixtures, paste0("expression_chr", chr, ".bed.gz"))
     bed <- read_tsv(phenotype_bed, show_col_types = FALSE)
     stopifnot(bed$start == c(100L, 399L)[chr], bed$end == bed$start + 1L)
-    writer <- pgenlibr::NewPgenWriter(pgen, sample_ct = length(sample_ids), variant_ct = 5L)
-    for (j in 1:5) {
+    writer <- pgenlibr::NewPgenWriter(pgen, sample_ct = length(sample_ids), variant_ct = 6L)
+    for (j in 1:6) {
       calls <- rep(if (j == 5L) -9L else 0L, length(sample_ids))
       calls[c(j, j + 7L)] <- 1L
       pgenlibr::AppendBiallelic(writer, calls)
@@ -41,7 +42,8 @@ run_smoke <- function() {
                  '##INFO=<ID=END,Number=1,Type=Integer,Description="End position">',
                  "#CHROM\tPOS\tID\tREF\tALT\tINFO",
                  sprintf("%d\t%d\tsv%d\tN\t<%s>\tEND=%d", chr, c(98:101, 147), 1:5,
-                         c("DEL", "DEL", "DUP", "DUP", "DEL"), c(115:118, 160))), pvar)
+                         c("DEL", "DEL", "DUP", "DUP", "DEL"), c(115:118, 160)),
+                 sprintf("%d\t101\tsv6\tN\t<INS:ME:ALU>\t.", chr)), pvar)
     write_tsv(tibble(`#IID` = sample_ids), psam)
     scan <- function(...) {
       .sv_pgen_scan(pgen_path = pgen, pvar_path = pvar, psam_path = psam,
@@ -51,6 +53,12 @@ run_smoke <- function() {
     list(exact = scan(window_padding_bp = 0L), padded = scan(window_padding_bp = 1L),
          default = scan(), reference = scan(missing_pgen_as_reference = TRUE),
          cds = scan(gtf_path = gtf),
+         custom = scan(window_padding_bp = 0L, masks = custom_masks),
+         custom_follow_up = scan(
+           window_padding_bp = 0L, masks = custom_masks,
+           significant_genes = tibble(gene_id = gene_ids[[1L]], chromosome = "chr1",
+                                      p_value = 0.01, q_value = 0.02)
+         ),
          follow_up = scan(
            missing_pgen_as_reference = TRUE,
            significant_genes = tibble(gene_id = gene_ids[[1L]], chromosome = "chr1",
@@ -91,6 +99,19 @@ run_smoke <- function() {
     all(follow_up$lof_covariate_used), all(follow_up$status == "ok"),
     all(is.finite(follow_up$beta)), all(is.finite(follow_up$p_value)),
     nrow(scans[[2L]]$follow_up) == 0L
+  )
+  custom <- map(scans, "custom") %>% list_rbind()
+  custom_genes <- .sv_pgen_gene_results(custom, "BH", masks = custom_masks)
+  custom_follow_up <- map(scans, "custom_follow_up") %>% list_rbind()
+  stopifnot(
+    identical(custom$sv_mask, rep(c("INS", "DEL+INS"), 2L)),
+    identical(custom$n_svs_in_mask, c(1L, 3L, 0L, 0L)),
+    all(custom$n_svs_tested[1:2] == c(1L, 3L)),
+    identical(custom_genes$status, c("ok", "no_test")),
+    isTRUE(all.equal(custom_genes$p_value[[1L]], .sv_cauchy_p(custom$p_value[1:2]))),
+    setequal(custom_follow_up$variant_id, c("sv1", "sv2", "sv6")),
+    custom_follow_up$tested_masks[custom_follow_up$variant_id == "sv6"] == "INS,DEL+INS",
+    all(custom_follow_up$status == "ok")
   )
   cat("PASS: split BEDs, BED and CDS overlaps, pgenlibr hard calls, and two-chromosome gathering.\n")
 }

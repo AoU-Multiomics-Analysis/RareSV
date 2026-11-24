@@ -56,6 +56,7 @@ def render_and_capture(task, inputs, paths, directory, stdlib_class=LocalCommand
 def check_commands(document, directory, files):
     tasks = {task.name: task for task in document.tasks}
     runtime = dict(docker_image="test/image:1", task_memory="2 GB", disk_gb=10)
+    mask_spec = "INS,DEL+DUP+INS"
     uris = {name: f"gs://test/{name}" for name in
             ("gtf", "lof", "cov", "chr1", "chr2", "parsed_manifest", "significant_genes")}
     uris.update({key: uri for key, uri in files.items() if key != "chromosome"})
@@ -74,6 +75,7 @@ def check_commands(document, directory, files):
         covariate_columns="age,PC1",
         lof_missing_as_noncarrier=False,
         missing_pgen_as_reference=True,
+        sv_masks=mask_spec,
         window_padding_bp=250,
         max_alt_af=0.01,
         max_missing=0.05,
@@ -86,11 +88,13 @@ def check_commands(document, directory, files):
         assert args[args.index("--" + flag) + 1] == str(paths[uris[key]])
     assert "--unknown-unlisted-lof" in args
     assert "--missing-pgen-as-reference" in args
+    assert args[args.index("--sv-masks") + 1] == mask_spec
     assert "--significant-genes" not in args
     assert args[args.index("--window-padding-bp") + 1] == "250"
     follow_up = dict(scan, significant_genes=uris["significant_genes"])
     args = render_and_capture(tasks["test_chromosome"], follow_up, paths, directory)
     assert args[args.index("--significant-genes") + 1] == str(paths[uris["significant_genes"]])
+    assert args[args.index("--sv-masks") + 1] == mask_spec
     args = render_and_capture(tasks["test_chromosome"],
                               dict(scan, cds_gtf=None, covariates=None, covariate_columns="",
                                    lof_missing_as_noncarrier=True, missing_pgen_as_reference=False),
@@ -102,11 +106,13 @@ def check_commands(document, directory, files):
     paths[results[0]] = directory / "mask's file $(touch unexpected-command).tsv"
     paths[results[0]].touch()
     args = render_and_capture(tasks["gather_results"],
-                              dict(runtime, masks=results, manifest=uris["parsed_manifest"], fdr_method="BH"),
+                              dict(runtime, masks=results, manifest=uris["parsed_manifest"],
+                                   sv_masks=mask_spec, fdr_method="BH"),
                               paths, directory, CloudCommandStdLib)
     assert args[:2] == ["/opt/sv-skato/sv_pgen_workflow.R", "gather"]
     assert args[-2:] == ["--fdr-method", "BH"]
     assert args[args.index("--manifest") + 1] == str(paths[uris["parsed_manifest"]])
+    assert args[args.index("--sv-masks") + 1] == mask_spec
     mask_list = args[args.index("--mask-list") + 1]
     assert "://" not in mask_list
     contents = (directory / mask_list).read_text(encoding="utf-8")
@@ -156,6 +162,7 @@ def check_manifest(document, directory):
     assert "sv_skato.docker_image" not in inputs
     assert "sv_skato.missing_pgen_as_reference" not in inputs
     assert "sv_skato.follow_up" not in inputs
+    assert "sv_skato.sv_masks" not in inputs
     values = WDL.values_from_json(inputs,
                                   document.workflow.available_inputs, document.workflow.required_inputs,
                                   namespace="sv_skato")
@@ -163,7 +170,7 @@ def check_manifest(document, directory):
     assert values["chromosome_manifest"].value == uri
     subprocess.run(command + ["--cds-gtf", "gs://test/cds.gtf", "--window-padding-bp", "0",
                               "--docker-image", "test/image:2", "--missing-pgen-as-reference",
-                              "--no-follow-up"], check=True)
+                              "--no-follow-up", "--sv-masks", "INS,DEL+DUP+INS"], check=True)
     values = WDL.values_from_json(json.loads(output.read_text(encoding="utf-8")),
                                   document.workflow.available_inputs, document.workflow.required_inputs,
                                   namespace="sv_skato")
@@ -173,6 +180,7 @@ def check_manifest(document, directory):
     assert values["docker_image"].value == "test/image:2"
     assert values["missing_pgen_as_reference"].value is True
     assert values["follow_up"].value is False
+    assert values["sv_masks"].value == "INS,DEL+DUP+INS"
     task = next(task for task in document.tasks if task.name == "parse_manifest")
     inputs = {"manifest": uri, "docker_image": "test/image:1"}
     rendered = render_command(task, inputs, {uri: manifest}, directory)

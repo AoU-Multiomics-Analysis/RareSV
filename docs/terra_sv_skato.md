@@ -1,6 +1,6 @@
 # LoF-adjusted SV SKAT-O on Terra and Researcher Workbench
 
-Use [sv_skato.wdl](../wdl/sv_skato.wdl) with Cromwell. The WDL uses version 1.0 and defaults to `docker.io/epadhi/raresv:workbench-follow-up-a29862b`. This image includes `R.utils` for gzipped LoF tables. Set `docker_image` if you need a different image.
+Use [sv_skato.wdl](../wdl/sv_skato.wdl) with Cromwell. The WDL uses version 1.0 and defaults to `docker.io/epadhi/raresv:workbench-sv-masks-b0cc7fc`. This image includes `R.utils` for gzipped LoF tables. Set `docker_image` if you need a different image.
 
 ## Prepare the phenotype BED files
 
@@ -60,7 +60,9 @@ By default, the scan extends each BED interval by 1,000,000 bp on both sides and
 
 To select SVs by CDS overlap, supply `cds_gtf` in Terra or pass `--cds-gtf gs://BUCKET/coding_annotation.gtf.gz` to the manifest converter. The scan then uses the annotated CDS intervals directly. Padding applies only to BED windows.
 
-Each scan matches PSAM IIDs to finite trait scores, then applies the covariate filters. It tests `DEL`, `DUP`, and `DEL+DUP` masks with the same quantitative null model per gene. The LoF term enters the model when the flag varies among retained participants. Defaults are alternate-allele frequency ≤1% and missing hard calls ≤5%.
+Each scan matches PSAM IIDs to finite trait scores, then applies the covariate filters. It tests the selected masks with the same quantitative null model per gene. The LoF term enters the model when the flag varies among retained participants. Defaults are alternate-allele frequency ≤1% and missing hard calls ≤5%.
+
+Set `sv_masks` in Workbench or pass `--sv-masks` to the input generator. The default is `DEL,DUP,DEL+DUP`. Separate masks with commas and join types within a mask with `+`. For example, `DEL,DUP,DEL+DUP,INS` adds an insertion-only mask, and `DEL,DUP,INS,DEL+DUP+INS` includes a pooled mask for all three types. The workflow uses the PVAR `POS` as a one-base anchor for each insertion. The PVAR must identify it as an insertion through symbolic `ALT` or `INFO/SVTYPE`. ACAT combines the available p-values from the selected masks, and follow-up uses the same masks.
 
 - `mask_results.tsv` gives raw SKAT-O p-values, sample and SV counts, and mask status. An empty mask has no p-value.
 - `gene_results.tsv` gives the equal-weight Cauchy p-value per gene and one FDR correction across all chromosomes. Storey q-values are the default. Set `fdr_method` to `BH` to use Benjamini–Hochberg. If the Storey estimate fails, the task logs the reason and returns missing q-values.

@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--covariates")
     parser.add_argument("--covariate-columns", help="Comma-delimited column names")
     parser.add_argument("--fdr-method", choices=("storey", "BH"), default="storey")
+    parser.add_argument("--sv-masks", help="Comma-separated SV masks, for example DEL,DUP,DEL+DUP,INS")
     parser.add_argument("--no-follow-up", action="store_true", help="Skip single-variant follow-up")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -37,6 +38,8 @@ def main():
         inputs["sv_skato.docker_image"] = args.docker_image
     if args.missing_pgen_as_reference:
         inputs["sv_skato.missing_pgen_as_reference"] = True
+    if args.sv_masks is not None:
+        inputs["sv_skato.sv_masks"] = args.sv_masks
     if args.no_follow_up:
         inputs["sv_skato.follow_up"] = False
     if args.cds_gtf:
