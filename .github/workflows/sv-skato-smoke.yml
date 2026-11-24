@@ -18,7 +18,6 @@ permissions:
 
 jobs:
   smoke:
-    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -40,6 +39,18 @@ jobs:
           docker build -f docker/sv-skato/Dockerfile \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             -t sv-skato:smoke .
+      - name: Check container startup settings
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect sv-skato:smoke --format '{{.Config.User}}')" = root
+          test "$(docker image inspect sv-skato:smoke --format '{{.Config.WorkingDir}}')" = /work
+          entrypoint=$(docker image inspect sv-skato:smoke --format '{{json .Config.Entrypoint}}')
+          case "$entrypoint" in
+            null|'[]') ;;
+            *) printf 'Expected an empty entrypoint, got %s\n' "$entrypoint" >&2; exit 1 ;;
+          esac
+          docker run --rm --network none --entrypoint /bin/bash sv-skato:smoke -c \
+            'test "$(id -u)" = 0 && test "$PWD" = /work && Rscript --version'
       - name: Run synthetic PLINK and SKAT-O checks
         run: |
           docker run --rm -v "$PWD:/repo:ro" -w /repo sv-skato:smoke Rscript tests/test_sv_pgen_workflow.R
