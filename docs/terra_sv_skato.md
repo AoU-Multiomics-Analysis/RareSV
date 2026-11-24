@@ -1,6 +1,6 @@
 # LoF-adjusted SV SKAT-O on Terra and Researcher Workbench
 
-Use [sv_skato.wdl](../wdl/sv_skato.wdl) with Cromwell. The WDL uses version 1.0 and defaults to `docker.io/epadhi/raresv:r-utils-a484c61`. This image includes `R.utils` for gzipped LoF tables. Set `docker_image` if you need a different image.
+Use [sv_skato.wdl](../wdl/sv_skato.wdl) with Cromwell. The WDL uses version 1.0 and defaults to `docker.io/epadhi/raresv:workbench-r-utils-2.13.0`. This image includes `R.utils` for gzipped LoF tables. Set `docker_image` if you need a different image.
 
 ## Prepare the phenotype BED files
 

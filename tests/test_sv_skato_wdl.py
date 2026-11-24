@@ -24,15 +24,20 @@ class LocalCommandStdLib(WDL.StdLib.Base):
         return filename
 
 
-def render_command(task, inputs, paths, directory):
+class CloudCommandStdLib(WDL.StdLib.Base):
+    def _virtualize_filename(self, filename):
+        return f"gs://test/task-commands/{Path(filename).name}"
+
+
+def render_command(task, inputs, paths, directory, stdlib_class=LocalCommandStdLib):
     values = WDL.values_from_json(inputs, task.available_inputs, task.required_inputs)
     localized = WDL.Value.rewrite_env_paths(values, lambda value: str(paths[value.value]))
-    stdlib = LocalCommandStdLib("1.0", write_dir=str(directory))
+    stdlib = stdlib_class("1.0", write_dir=str(directory))
     return task.command.eval(localized, stdlib).value
 
 
-def render_and_capture(task, inputs, paths, directory):
-    rendered = render_command(task, inputs, paths, directory)
+def render_and_capture(task, inputs, paths, directory, stdlib_class=LocalCommandStdLib):
+    rendered = render_command(task, inputs, paths, directory, stdlib_class)
     capture = directory / "captured.json"
     fake_rscript = directory / "Rscript"
     fake_rscript.write_text(
@@ -85,12 +90,17 @@ def check_commands(document, directory, files):
     assert all(flag not in args for flag in ("--gtf", "--covariates", "--covariate-cols", "--unknown-unlisted-lof"))
 
     results = [uris["chr1"], uris["chr2"]]
+    paths[results[0]] = directory / "mask's file $(touch unexpected-command).tsv"
+    paths[results[0]].touch()
     args = render_and_capture(tasks["gather_results"], dict(runtime, masks=results, fdr_method="BH"),
-                              paths, directory)
+                              paths, directory, CloudCommandStdLib)
     assert args[:2] == ["/opt/sv-skato/sv_pgen_workflow.R", "gather"]
     assert args[-2:] == ["--fdr-method", "BH"]
-    contents = Path(args[args.index("--mask-list") + 1]).read_text(encoding="utf-8")
+    mask_list = args[args.index("--mask-list") + 1]
+    assert "://" not in mask_list
+    contents = (directory / mask_list).read_text(encoding="utf-8")
     assert contents.splitlines() == [str(paths[uri]) for uri in results]
+    assert not (directory / "unexpected-command").exists()
 
 
 def check_manifest(document, directory):

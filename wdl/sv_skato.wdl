@@ -12,7 +12,7 @@ workflow sv_skato {
     Float max_alt_af = 0.01
     Float max_missing = 0.05
     String fdr_method = "storey"
-    String docker_image = "docker.io/epadhi/raresv:r-utils-a484c61"
+    String docker_image = "docker.io/epadhi/raresv:workbench-r-utils-2.13.0"
     String scan_memory = "12 GB"
     Int scan_disk_gb = 100
     String gather_memory = "4 GB"
@@ -220,12 +220,20 @@ task gather_results {
 
   command <<<
     set -euo pipefail
-    # The task writes this newline-delimited list from localized File inputs during command rendering.
-    mask_list='~{sub(write_lines(masks), "'", "'\"'\"'")}'
-    printf 'Combining chromosome mask results and applying 5%% FDR across genes\n' >&2
-    Rscript /opt/sv-skato/sv_pgen_workflow.R gather \
-      --mask-list "$mask_list" --fdr-method '~{sub(fdr_method, "'", "'\"'\"'")}'
-    printf 'Finished writing combined gene results\n' >&2
+    # Pass paths as literal stdin. Replace the outer shell so it cannot run anything after the delimiter.
+    exec /bin/bash -euo pipefail -c '
+      mask_list="mask_paths.txt"
+      cat > "$mask_list"
+      if [[ $(wc -l < "$mask_list") -ne "$2" ]]; then
+        printf "Expected one localized mask path per input file\n" >&2
+        exit 1
+      fi
+      printf "Combining chromosome mask results and applying 5%% FDR across genes\n" >&2
+      Rscript /opt/sv-skato/sv_pgen_workflow.R gather --mask-list "$mask_list" --fdr-method "$1"
+      printf "Finished writing combined gene results\n" >&2
+    ' gather-results '~{sub(fdr_method, "'", "'\"'\"'")}' '~{length(masks)}' <<'RARESV_MASK_PATHS'
+~{sep="\n" masks}
+RARESV_MASK_PATHS
   >>>
 
   output {
