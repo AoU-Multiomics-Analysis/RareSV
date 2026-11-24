@@ -5,6 +5,7 @@ RUN micromamba install --yes --name base --strict-channel-priority \
     r-base=4.5.2 \
     r-tidyverse=2.0.0 \
     r-data.table=1.17.8 \
+    r-r.utils=2.13.0 \
     r-optparse=1.7.5 \
     r-pgenlibr=0.7.0 \
     r-skat=2.2.5 \
