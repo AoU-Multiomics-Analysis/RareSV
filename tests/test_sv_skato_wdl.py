@@ -56,7 +56,8 @@ def render_and_capture(task, inputs, paths, directory, stdlib_class=LocalCommand
 def check_commands(document, directory, files):
     tasks = {task.name: task for task in document.tasks}
     runtime = dict(docker_image="test/image:1", task_memory="2 GB", disk_gb=10)
-    uris = {name: f"gs://test/{name}" for name in ("gtf", "lof", "cov", "chr1", "chr2")}
+    uris = {name: f"gs://test/{name}" for name in
+            ("gtf", "lof", "cov", "chr1", "chr2", "parsed_manifest", "significant_genes")}
     uris.update({key: uri for key, uri in files.items() if key != "chromosome"})
     paths = {}
     for name, uri in uris.items():
@@ -68,6 +69,7 @@ def check_commands(document, directory, files):
         **files,
         cds_gtf=uris["gtf"],
         lof_table=uris["lof"],
+        significant_genes=None,
         covariates=uris["cov"],
         covariate_columns="age,PC1",
         lof_missing_as_noncarrier=False,
@@ -84,7 +86,11 @@ def check_commands(document, directory, files):
         assert args[args.index("--" + flag) + 1] == str(paths[uris[key]])
     assert "--unknown-unlisted-lof" in args
     assert "--missing-pgen-as-reference" in args
+    assert "--significant-genes" not in args
     assert args[args.index("--window-padding-bp") + 1] == "250"
+    follow_up = dict(scan, significant_genes=uris["significant_genes"])
+    args = render_and_capture(tasks["test_chromosome"], follow_up, paths, directory)
+    assert args[args.index("--significant-genes") + 1] == str(paths[uris["significant_genes"]])
     args = render_and_capture(tasks["test_chromosome"],
                               dict(scan, cds_gtf=None, covariates=None, covariate_columns="",
                                    lof_missing_as_noncarrier=True, missing_pgen_as_reference=False),
@@ -95,15 +101,43 @@ def check_commands(document, directory, files):
     results = [uris["chr1"], uris["chr2"]]
     paths[results[0]] = directory / "mask's file $(touch unexpected-command).tsv"
     paths[results[0]].touch()
-    args = render_and_capture(tasks["gather_results"], dict(runtime, masks=results, fdr_method="BH"),
+    args = render_and_capture(tasks["gather_results"],
+                              dict(runtime, masks=results, manifest=uris["parsed_manifest"], fdr_method="BH"),
                               paths, directory, CloudCommandStdLib)
     assert args[:2] == ["/opt/sv-skato/sv_pgen_workflow.R", "gather"]
     assert args[-2:] == ["--fdr-method", "BH"]
+    assert args[args.index("--manifest") + 1] == str(paths[uris["parsed_manifest"]])
     mask_list = args[args.index("--mask-list") + 1]
     assert "://" not in mask_list
     contents = (directory / mask_list).read_text(encoding="utf-8")
     assert contents.splitlines() == [str(paths[uri]) for uri in results]
     assert not (directory / "unexpected-command").exists()
+    for files in (results, []):
+        args = render_and_capture(tasks["gather_follow_up"], dict(runtime, files=files),
+                                  paths, directory, CloudCommandStdLib)
+        assert args[:2] == ["/opt/sv-skato/sv_pgen_workflow.R", "gather-follow-up"]
+        follow_up_list = args[args.index("--follow-up-list") + 1]
+        assert "://" not in follow_up_list
+        assert (directory / follow_up_list).read_text(encoding="utf-8").splitlines() == [
+            str(paths[uri]) for uri in files
+        ]
+
+
+def check_follow_up_rows(document, directory):
+    task = next(task for task in document.tasks if task.name == "gather_results")
+    output = next(output for output in task.outputs if output.name == "follow_up_rows")
+
+    class OutputStdLib(WDL.StdLib.Base):
+        def _devirtualize_filename(self, filename):
+            return str(directory / filename)
+
+    stdlib = OutputStdLib("1.0")
+    manifest = directory / "follow_up_manifest.tsv"
+    manifest.touch()
+    assert output.expr.eval(WDL.Env.Bindings(), stdlib).json == []
+    row = ["chr21", "gs://test/21.pgen", "gs://test/21.pvar", "gs://test/21.psam", "gs://test/21.bed"]
+    manifest.write_text("\t".join(row) + "\n", encoding="utf-8")
+    assert output.expr.eval(WDL.Env.Bindings(), stdlib).json == [row]
 
 
 def check_manifest(document, directory):
@@ -121,13 +155,15 @@ def check_manifest(document, directory):
     assert "sv_skato.window_padding_bp" not in inputs
     assert "sv_skato.docker_image" not in inputs
     assert "sv_skato.missing_pgen_as_reference" not in inputs
+    assert "sv_skato.follow_up" not in inputs
     values = WDL.values_from_json(inputs,
                                   document.workflow.available_inputs, document.workflow.required_inputs,
                                   namespace="sv_skato")
     assert isinstance(values["chromosome_manifest"], WDL.Value.File)
     assert values["chromosome_manifest"].value == uri
     subprocess.run(command + ["--cds-gtf", "gs://test/cds.gtf", "--window-padding-bp", "0",
-                              "--docker-image", "test/image:2", "--missing-pgen-as-reference"], check=True)
+                              "--docker-image", "test/image:2", "--missing-pgen-as-reference",
+                              "--no-follow-up"], check=True)
     values = WDL.values_from_json(json.loads(output.read_text(encoding="utf-8")),
                                   document.workflow.available_inputs, document.workflow.required_inputs,
                                   namespace="sv_skato")
@@ -136,6 +172,7 @@ def check_manifest(document, directory):
     assert values["window_padding_bp"].value == 0
     assert values["docker_image"].value == "test/image:2"
     assert values["missing_pgen_as_reference"].value is True
+    assert values["follow_up"].value is False
     task = next(task for task in document.tasks if task.name == "parse_manifest")
     inputs = {"manifest": uri, "docker_image": "test/image:1"}
     rendered = render_command(task, inputs, {uri: manifest}, directory)
@@ -187,6 +224,7 @@ def main():
     with TemporaryDirectory() as temp:
         files = check_manifest(document, Path(temp))
         check_commands(document, Path(temp), files)
+        check_follow_up_rows(document, Path(temp))
     print("PASS: workflow-scope file creation, TSV validation, and cloud-to-task file localization.")
 
 

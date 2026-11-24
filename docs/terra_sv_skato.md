@@ -1,6 +1,6 @@
 # LoF-adjusted SV SKAT-O on Terra and Researcher Workbench
 
-Use [sv_skato.wdl](../wdl/sv_skato.wdl) with Cromwell. The WDL uses version 1.0 and defaults to `docker.io/epadhi/raresv:workbench-missing-gt-662e268`. This image includes `R.utils` for gzipped LoF tables. Set `docker_image` if you need a different image.
+Use [sv_skato.wdl](../wdl/sv_skato.wdl) with Cromwell. The WDL uses version 1.0 and defaults to `docker.io/epadhi/raresv:workbench-follow-up-a29862b`. This image includes `R.utils` for gzipped LoF tables. Set `docker_image` if you need a different image.
 
 ## Prepare the phenotype BED files
 
@@ -65,8 +65,11 @@ Each scan matches PSAM IIDs to finite trait scores, then applies the covariate f
 - `mask_results.tsv` gives raw SKAT-O p-values, sample and SV counts, and mask status. An empty mask has no p-value.
 - `gene_results.tsv` gives the equal-weight Cauchy p-value per gene and one FDR correction across all chromosomes. Storey q-values are the default. Set `fdr_method` to `BH` to use Benjamini–Hochberg. If the Storey estimate fails, the task logs the reason and returns missing q-values.
 - `significant_genes.tsv` contains genes with `q_value < 0.05`.
+- `single_variant_results.tsv` contains one row per gene and SV tested in the follow-up. It gives the SV ID and type, the masks that tested it, the dosage effect and 95% confidence interval, the nominal regression p-value, and the parent gene p-value and q-value.
 
 A gene with one valid mask and no failed masks keeps its mask p-value. A gene with a failed mask has status `incomplete`. It stays in the FDR family at p=1 and has no reported gene p-value or q-value. A gene with no eligible SV test has status `no_test`.
+
+Follow-up runs by default after the gene-level FDR step. Cromwell starts one follow-up task per chromosome with significant genes. The task refits the masks for those genes to recover which SVs SKAT-O used. It fits each gene and SV pair once with the same samples, genotype handling, and covariates, including LoF status when it varies. The variant p-values are nominal because the same data selected the genes. If no genes pass FDR, the combined follow-up table contains only its header. Set `follow_up = false` in Workbench or pass `--no-follow-up` to the input generator to skip this step.
 
 ## Verification
 
