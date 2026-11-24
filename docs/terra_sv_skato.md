@@ -29,6 +29,18 @@ chromosome	pgen	pvar	psam	phenotype_bed
 - The shared LoF TSV requires `sample_id`, `gene_id`, and `has_lof_variant`. An omitted gene–participant pair means noncarrier by default. Explicit missing flags are unknown. To model unlisted pairs as unknown, set `lof_missing_as_noncarrier` to `false` in the workflow inputs.
 - Optional fixed covariates use a shared TSV with one row per `sample_id`. Set `covariates` and `covariate_columns` together.
 
+For the merged SV callset where `./.` and `.|.` encode reference, run [the VCF genotype filter](../scripts/normalize_merged_sv_genotypes.py) before PLINK import. This restores the convention used by the original VCF analysis. The filter preserves partial calls and single-dot calls. Use `--vcf-half-call missing` so PLINK keeps partial calls missing.
+
+```sh
+set -o pipefail
+tabix -h input.vcf.gz chr21 \
+  | python3 scripts/normalize_merged_sv_genotypes.py \
+  | gzip -c > chr21.reference_gt.vcf.gz
+plink2 --vcf chr21.reference_gt.vcf.gz --vcf-half-call missing \
+  --const-fid 0 --sort-vars --output-chr chrM \
+  --make-pgen pvar-cols=xheader,qual,filter,info --out chr21
+```
+
 Store the TSV in Cloud Storage. In the workflow form, set `chromosome_manifest` to its `gs://` URI. In Researcher Workbench, enter it in **New job → Prepare inputs**. The manifest task checks the header, checks for duplicate chromosomes, and requires a `gs://` URI in each file column. Cromwell localizes each chromosome's data files as explicit `File` inputs for the scan.
 
 For command-line Cromwell submissions, use [the input generator](../scripts/prepare_sv_skato_inputs.py) to write the inputs JSON. The `chromosome_manifest` value is the URI of the TSV.
