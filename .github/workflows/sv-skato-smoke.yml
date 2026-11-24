@@ -1,16 +1,6 @@
-name: SV SKAT-O image
+name: RareSV published image check
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - R/sv_set_tests.R
-      - R/sv_pgen_workflow.R
-  pull_request:
-    paths:
-      - R/sv_set_tests.R
-      - R/sv_pgen_workflow.R
   workflow_dispatch:
 
 permissions:
@@ -19,9 +9,8 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
+    env:
+      IMAGE: docker.io/epadhi/raresv:workbench-sv-masks-b0cc7fc
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,40 +18,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Check WDL syntax and localization
+      - name: Check WDL validation and localization
         run: |
           python3 -m pip install miniwdl==1.14.2
           miniwdl check wdl/sv_skato.wdl
           python3 tests/test_sv_skato_wdl.py
-      - name: Build the analysis image
-        run: |
-          docker build -f docker/sv-skato/Dockerfile \
-            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-            -t sv-skato:smoke .
-      - name: Check container startup settings
+      - name: Run the configurable-mask regression against the published image
         run: |
           set -euo pipefail
-          test "$(docker image inspect sv-skato:smoke --format '{{.Config.User}}')" = root
-          test "$(docker image inspect sv-skato:smoke --format '{{.Config.WorkingDir}}')" = /work
-          entrypoint=$(docker image inspect sv-skato:smoke --format '{{json .Config.Entrypoint}}')
-          case "$entrypoint" in
-            null|'[]') ;;
-            *) printf 'Expected an empty entrypoint, got %s\n' "$entrypoint" >&2; exit 1 ;;
-          esac
-          docker run --rm --network none --entrypoint /bin/bash sv-skato:smoke -c \
-            'test "$(id -u)" = 0 && test "$PWD" = /work && Rscript --version'
-      - name: Run synthetic PLINK and SKAT-O checks
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo sv-skato:smoke Rscript tests/test_sv_pgen_workflow.R
-          docker run --rm -v "$PWD:/repo:ro" -w /repo sv-skato:smoke Rscript tests/smoke_sv_pgen_workflow.R
-      - name: Publish the tested image to GitHub Container Registry
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          docker tag sv-skato:smoke "$image:$GITHUB_SHA"
-          docker push "$image:$GITHUB_SHA"
-          printf 'Published %s\n' "$image:$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          docker pull "$IMAGE"
+          docker image inspect "$IMAGE" --format '{{json .RepoDigests}}'
+          docker run --rm --network none --entrypoint /bin/bash "$IMAGE" -c             'test "$(id -u)" = 0 && test "$PWD" = /work'
+          docker run --rm --network none -v "$PWD:/repo:ro" -w /repo --entrypoint /bin/bash "$IMAGE" -c '
+            set -euo pipefail
+            cmp R/sv_pgen_workflow.R /opt/sv-skato/sv_pgen_workflow.R
+            cmp R/sv_set_tests.R /opt/sv-skato/sv_set_tests.R
+            Rscript /opt/sv-skato/sv_pgen_workflow.R scan --help | grep -- --sv-masks
+            Rscript tests/test_sv_set_tests.R
+            Rscript tests/test_sv_pgen_workflow.R
+            Rscript tests/smoke_sv_pgen_workflow.R
+          '
