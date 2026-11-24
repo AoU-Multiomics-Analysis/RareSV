@@ -32,7 +32,7 @@ run_smoke <- function() {
     stopifnot(bed$start == c(100L, 399L)[chr], bed$end == bed$start + 1L)
     writer <- pgenlibr::NewPgenWriter(pgen, sample_ct = length(sample_ids), variant_ct = 5L)
     for (j in 1:5) {
-      calls <- integer(length(sample_ids))
+      calls <- rep(if (j == 5L) -9L else 0L, length(sample_ids))
       calls[c(j, j + 7L)] <- 1L
       pgenlibr::AppendBiallelic(writer, calls)
     }
@@ -49,7 +49,8 @@ run_smoke <- function() {
                     chromosome = as.character(chr), max_alt_af = 0.1, ...)
     }
     list(exact = scan(window_padding_bp = 0L), padded = scan(window_padding_bp = 1L),
-         default = scan(), cds = scan(gtf_path = gtf))
+         default = scan(), reference = scan(missing_pgen_as_reference = TRUE),
+         cds = scan(gtf_path = gtf))
   })
   bed_masks <- map(scans, "exact") %>% list_rbind()
   bed_genes <- .sv_pgen_gene_results(bed_masks, "BH")
@@ -61,7 +62,13 @@ run_smoke <- function() {
   padded_masks <- map(scans, "padded") %>% list_rbind()
   stopifnot(identical(padded_masks$n_svs_in_mask, c(2L, 2L, 4L, 0L, 0L, 0L)))
   default_masks <- map(scans, "default") %>% list_rbind()
-  stopifnot(identical(default_masks$n_svs_in_mask, rep(c(3L, 2L, 5L), 2L)))
+  reference_masks <- map(scans, "reference") %>% list_rbind()
+  stopifnot(
+    identical(default_masks$n_svs_in_mask, rep(c(3L, 2L, 5L), 2L)),
+    identical(default_masks$n_svs_eligible, rep(c(2L, 2L, 4L), 2L)),
+    identical(reference_masks$n_svs_eligible, reference_masks$n_svs_in_mask),
+    all(reference_masks$status == "ok"), all(is.finite(reference_masks$p_value))
+  )
   masks <- map(scans, "cds") %>% list_rbind()
   genes <- .sv_pgen_gene_results(masks, "BH")
   stopifnot(

@@ -71,6 +71,7 @@ def check_commands(document, directory, files):
         covariates=uris["cov"],
         covariate_columns="age,PC1",
         lof_missing_as_noncarrier=False,
+        missing_pgen_as_reference=True,
         window_padding_bp=250,
         max_alt_af=0.01,
         max_missing=0.05,
@@ -82,12 +83,14 @@ def check_commands(document, directory, files):
                       ("covariates", "cov")):
         assert args[args.index("--" + flag) + 1] == str(paths[uris[key]])
     assert "--unknown-unlisted-lof" in args
+    assert "--missing-pgen-as-reference" in args
     assert args[args.index("--window-padding-bp") + 1] == "250"
     args = render_and_capture(tasks["test_chromosome"],
                               dict(scan, cds_gtf=None, covariates=None, covariate_columns="",
-                                   lof_missing_as_noncarrier=True),
+                                   lof_missing_as_noncarrier=True, missing_pgen_as_reference=False),
                               paths, directory)
-    assert all(flag not in args for flag in ("--gtf", "--covariates", "--covariate-cols", "--unknown-unlisted-lof"))
+    assert all(flag not in args for flag in ("--gtf", "--covariates", "--covariate-cols",
+                                            "--unknown-unlisted-lof", "--missing-pgen-as-reference"))
 
     results = [uris["chr1"], uris["chr2"]]
     paths[results[0]] = directory / "mask's file $(touch unexpected-command).tsv"
@@ -117,13 +120,14 @@ def check_manifest(document, directory):
     assert "sv_skato.cds_gtf" not in inputs
     assert "sv_skato.window_padding_bp" not in inputs
     assert "sv_skato.docker_image" not in inputs
+    assert "sv_skato.missing_pgen_as_reference" not in inputs
     values = WDL.values_from_json(inputs,
                                   document.workflow.available_inputs, document.workflow.required_inputs,
                                   namespace="sv_skato")
     assert isinstance(values["chromosome_manifest"], WDL.Value.File)
     assert values["chromosome_manifest"].value == uri
     subprocess.run(command + ["--cds-gtf", "gs://test/cds.gtf", "--window-padding-bp", "0",
-                              "--docker-image", "test/image:2"], check=True)
+                              "--docker-image", "test/image:2", "--missing-pgen-as-reference"], check=True)
     values = WDL.values_from_json(json.loads(output.read_text(encoding="utf-8")),
                                   document.workflow.available_inputs, document.workflow.required_inputs,
                                   namespace="sv_skato")
@@ -131,6 +135,7 @@ def check_manifest(document, directory):
     assert values["cds_gtf"].value == "gs://test/cds.gtf"
     assert values["window_padding_bp"].value == 0
     assert values["docker_image"].value == "test/image:2"
+    assert values["missing_pgen_as_reference"].value is True
     task = next(task for task in document.tasks if task.name == "parse_manifest")
     inputs = {"manifest": uri, "docker_image": "test/image:1"}
     rendered = render_command(task, inputs, {uri: manifest}, directory)

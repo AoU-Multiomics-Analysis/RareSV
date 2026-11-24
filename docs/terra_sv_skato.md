@@ -1,6 +1,6 @@
 # LoF-adjusted SV SKAT-O on Terra and Researcher Workbench
 
-Use [sv_skato.wdl](../wdl/sv_skato.wdl) with Cromwell. The WDL uses version 1.0 and defaults to `docker.io/epadhi/raresv:workbench-r-utils-2.13.0`. This image includes `R.utils` for gzipped LoF tables. Set `docker_image` if you need a different image.
+Use [sv_skato.wdl](../wdl/sv_skato.wdl) with Cromwell. The WDL uses version 1.0 and defaults to `docker.io/epadhi/raresv:workbench-missing-gt-662e268`. This image includes `R.utils` for gzipped LoF tables. Set `docker_image` if you need a different image.
 
 ## Prepare the phenotype BED files
 
@@ -23,13 +23,13 @@ chromosome	pgen	pvar	psam	phenotype_bed
 ```
 
 - Use one PLINK 2 fileset per chromosome. The `.pvar` must have a `#CHROM` header and preserve the original ALT alleles. Keep `INFO/END` for symbolic deletions and duplications. The pipeline uses the same affected-span rules as the VCF helper. It logs the count of records with unresolved spans.
-- The pipeline reads diploid hard calls with `pgenlibr`. A missing PGEN hard call remains missing. Encode calls that mean confirmed reference as `0/0` before writing the PGEN.
+- The pipeline reads diploid hard calls with `pgenlibr`. Missing hard calls remain missing by default. If every missing hard call represents a confirmed noncarrier, set `missing_pgen_as_reference` to `true` in Workbench or pass `--missing-pgen-as-reference` to the input generator. The scan uses dosage zero for all missing SV hard calls before genotype QC.
 - Each phenotype BED starts with `#chr`, `start`, `end`, and `gene_id`, followed by one column per participant and an optional `gene_symbol` column. Use one row per gene and the same chromosome as the PLINK fileset. The sample column names must match `IID` in the PSAM. Plain `.bed` and gzip-compressed `.bed.gz` files are accepted.
 - Use the same reference assembly for the phenotype BED and the PVAR. Use that assembly for the GTF if you supply one.
 - The shared LoF TSV requires `sample_id`, `gene_id`, and `has_lof_variant`. An omitted gene–participant pair means noncarrier by default. Explicit missing flags are unknown. To model unlisted pairs as unknown, set `lof_missing_as_noncarrier` to `false` in the workflow inputs.
 - Optional fixed covariates use a shared TSV with one row per `sample_id`. Set `covariates` and `covariate_columns` together.
 
-For the merged SV callset where `./.` and `.|.` encode reference, run [the VCF genotype filter](../scripts/normalize_merged_sv_genotypes.py) before PLINK import. This restores the convention used by the original VCF analysis. The filter preserves partial calls and single-dot calls. Use `--vcf-half-call missing` so PLINK keeps partial calls missing.
+If only `./.` and `.|.` encode reference, run [the VCF genotype filter](../scripts/normalize_merged_sv_genotypes.py) before PLINK import. The filter preserves partial calls and single-dot calls. Use `--vcf-half-call missing` so PLINK keeps partial calls missing.
 
 ```sh
 set -o pipefail
