@@ -12,7 +12,7 @@ workflow sv_skato {
     Float max_alt_af = 0.01
     Float max_missing = 0.05
     String fdr_method = "storey"
-    String docker_image = "docker.io/epadhi/raresv:olink-base-1445dab"
+    String docker_image = "docker.io/epadhi/raresv:r-utils-a484c61"
     String scan_memory = "12 GB"
     Int scan_disk_gb = 100
     String gather_memory = "4 GB"
