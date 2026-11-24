@@ -56,7 +56,7 @@ jobs:
           docker run --rm -v "$PWD:/repo:ro" -w /repo sv-skato:smoke Rscript tests/test_sv_pgen_workflow.R
           docker run --rm -v "$PWD:/repo:ro" -w /repo sv-skato:smoke Rscript tests/smoke_sv_pgen_workflow.R
       - name: Publish the tested image to GitHub Container Registry
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: github.ref == 'refs/heads/codex/raresv-r-utils-build' && github.event_name == 'workflow_dispatch'
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

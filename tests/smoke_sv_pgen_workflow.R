@@ -10,7 +10,7 @@ run_smoke <- function() {
   gtf <- file.path(fixtures, "coding.gtf")
   writeLines(sprintf('chr%d\tsmoke\tCDS\t100\t140\t.\t+\t0\tgene_id "%s.1";',
                      1:2, gene_ids), gtf)
-  lof <- file.path(fixtures, "lof.tsv")
+  lof <- file.path(fixtures, "lof.tsv.gz")
   write_tsv(tibble(sample_id = c("s6", "s13", "s25"), gene_id = paste0(gene_ids[c(1, 2, 2)], ".1"),
                    has_lof_variant = TRUE), lof)
   scores <- as_tibble(set_names(as.list(sin(1:24)), rev(sample_ids[1:24])))
