@@ -1,6 +1,21 @@
 # Source sv_set_tests.R before using these functions from an R session.
 .sv_pgen_masks <- list(DEL = "DEL", DUP = "DUP", `DEL+DUP` = c("DEL", "DUP"))
 
+.sv_pgen_parse_masks <- function(spec) {
+  if (is.null(spec)) return(.sv_pgen_masks)
+  labels <- trimws(str_split_1(spec, fixed(",")))
+  if (any(!str_detect(labels, "^(DEL|DUP|INS)(\\+(DEL|DUP|INS))*$"))) {
+    stop("Specify comma-separated masks using DEL, DUP, or INS joined by '+'.")
+  }
+  masks <- str_split(labels, fixed("+"))
+  if (any(map_lgl(masks, ~ anyDuplicated(.x) > 0L))) {
+    stop("Each mask must contain distinct SV types.")
+  }
+  keys <- map_chr(masks, ~ paste(sort(.x), collapse = "+"))
+  if (anyDuplicated(keys)) stop("Each mask must specify a distinct set of SV types.")
+  set_names(masks, labels)
+}
+
 .sv_pgen_chr <- function(chromosome) {
   x <- str_remove(str_to_upper(trimws(as.character(chromosome))), "^CHR")
   recode(x, "23" = "X", "24" = "Y", "26" = "MT", "M" = "MT")
@@ -19,10 +34,15 @@
   path
 }
 
-.sv_pgen_interval_links <- function(pvar, intervals) {
+.sv_pgen_interval_links <- function(pvar, intervals, masks = .sv_pgen_masks) {
   spans <- .sv_cds_spans(pvar) %>%
     mutate(pgen_index = row_number(), chrom = .sv_pgen_chr(CHROM)) %>%
-    filter(sv_type %in% c("DEL", "DUP"), !is.na(ALT), !str_detect(ALT, ","))
+    filter(sv_type %in% unlist(masks, use.names = FALSE), !is.na(ALT), !str_detect(ALT, ","))
+  # Use the reference anchor for INS. Inserted sequence has no reference span.
+  anchors <- spans$sv_type == "INS"
+  spans$affected_start[anchors] <- spans$POS[anchors]
+  spans$affected_end[anchors] <- spans$POS[anchors]
+  spans$span_status[anchors] <- "ok"
   unresolved <- sum(spans$span_status == "unresolved_span")
   if (unresolved) {
     if (!any(spans$span_status == "ok")) {
@@ -48,8 +68,8 @@
     distinct() %>% arrange(gene_id, pgen_index)
 }
 
-.sv_pgen_mask_rows <- function(empty_status = "no_overlapping_sv") {
-  tibble(sv_mask = names(.sv_pgen_masks), status = empty_status, error_message = NA_character_,
+.sv_pgen_mask_rows <- function(empty_status = "no_overlapping_sv", masks = .sv_pgen_masks) {
+  tibble(sv_mask = names(masks), status = empty_status, error_message = NA_character_,
          n_samples = NA_integer_, n_lof_missing = NA_integer_, n_lof_carriers = NA_integer_,
          lof_covariate_used = NA, n_svs_in_mask = 0L, n_svs_eligible = 0L,
          n_svs_tested = 0L, p_value = NA_real_, warnings = NA_character_)
@@ -71,8 +91,9 @@
 
 .sv_pgen_test_gene <- function(pheno, Z, sv_types, lof_status, lof_missing_as_noncarrier,
                                covariates, covariate_cols, max_alt_af, max_missing,
-                               empty_status = "no_overlapping_sv", variants = NULL) {
-  rows <- .sv_pgen_mask_rows(empty_status)
+                               empty_status = "no_overlapping_sv", variants = NULL,
+                               masks = .sv_pgen_masks) {
+  rows <- .sv_pgen_mask_rows(empty_status, masks)
   if (!ncol(Z)) return(rows)
   model <- .sv_model_data(pheno, covariates, covariate_cols)
   model <- .sv_with_lof_covariate(model, lof_status, lof_missing_as_noncarrier)
@@ -91,7 +112,7 @@
   rows <- map(seq_len(nrow(rows)), function(i) {
     row <- rows[i, ]
     if (!is.null(variants)) row$tested_ids <- list(character())
-    in_mask <- sv_types %in% .sv_pgen_masks[[row$sv_mask]]
+    in_mask <- sv_types %in% masks[[row$sv_mask]]
     eligible <- in_mask & keep
     row$n_svs_in_mask <- sum(in_mask)
     row$n_svs_eligible <- sum(eligible)
@@ -152,10 +173,10 @@
   stats::pcauchy(mean(stats::qcauchy(bounded, lower.tail = FALSE)), lower.tail = FALSE)
 }
 
-.sv_pgen_gene_results <- function(raw, fdr_method = c("storey", "BH")) {
+.sv_pgen_gene_results <- function(raw, fdr_method = c("storey", "BH"), masks = .sv_pgen_masks) {
   fdr_method <- match.arg(fdr_method)
   allowed <- c("ok", "no_overlapping_sv", "no_cds_sv", "no_eligible_sv", "error")
-  if (anyNA(raw$gene_id) || any(!raw$sv_mask %in% names(.sv_pgen_masks)) ||
+  if (anyNA(raw$gene_id) || any(!raw$sv_mask %in% names(masks)) ||
       any(!raw$status %in% allowed) || anyDuplicated(raw[c("gene_id", "sv_mask")])) {
     stop("Invalid or duplicate gene-mask rows. Each gene must belong to one chromosome shard.")
   }
@@ -174,8 +195,8 @@
     mutate(status = case_when(n_masks_failed > 0L ~ "incomplete",
                               n_masks_tested == 0L ~ "no_test", TRUE ~ "ok"),
            q_value = NA_real_)
-  if (any(genes$n_masks != length(.sv_pgen_masks)) || anyDuplicated(genes$gene_id)) {
-    stop("Expected all three mask rows for each gene.")
+  if (any(genes$n_masks != length(masks)) || anyDuplicated(genes$gene_id)) {
+    stop("Expected one row per configured mask for each gene.")
   }
   family <- which(genes$status != "no_test")
   if (any(genes$status == "ok")) {
@@ -224,7 +245,8 @@
                           gtf_path = NULL, window_padding_bp = 1000000L,
                           covariate_path = NULL, covariate_cols = character(),
                           max_alt_af = 0.01, max_missing = 0.05, lof_missing_as_noncarrier = TRUE,
-                          missing_pgen_as_reference = FALSE, significant_genes = NULL) {
+                          missing_pgen_as_reference = FALSE, significant_genes = NULL,
+                          masks = .sv_pgen_masks) {
   stopifnot(length(chromosome) == 1L, !is.na(chromosome), nzchar(chromosome),
             is.finite(max_alt_af), max_alt_af > 0, max_alt_af <= 1,
             is.finite(max_missing), max_missing >= 0, max_missing <= 1,
@@ -289,7 +311,7 @@
     cds_symbols <- intervals %>% distinct(gene_id, gene_symbol) %>% filter(!is.na(gene_symbol))
     symbols <- coalesce(symbols, cds_symbols$gene_symbol[match(trait_keys, cds_symbols$gene_id)])
   }
-  links <- .sv_pgen_interval_links(pvar, intervals)
+  links <- .sv_pgen_interval_links(pvar, intervals, masks)
   if (anyNA(pvar$ID[links$pgen_index]) || any(pvar$ID[links$pgen_index] %in% c("", ".")) ||
       anyDuplicated(pvar$ID[unique(links$pgen_index)])) {
     stop("Overlapping SVs must have unique, nonblank PVAR IDs.")
@@ -313,6 +335,7 @@
   }
   message("Chromosome ", chromosome, ": ", length(selected), " genes and ",
           length(sample_ids), " matched sample columns.")
+  message("SV masks: ", paste(names(masks), collapse = ", "))
   if (missing_pgen_as_reference) {
     message("Treating missing PGEN hard calls as reference before genotype QC.")
   }
@@ -320,7 +343,7 @@
   map(selected, function(index) {
     id <- trait_keys[[index]]
     candidate <- links[links_by_gene[[id]], , drop = FALSE]
-    result <- if (is.null(significant_genes)) .sv_pgen_mask_rows(empty_status) else {
+    result <- if (is.null(significant_genes)) .sv_pgen_mask_rows(empty_status, masks) else {
       .sv_pgen_followup_rows(NA_character_) %>% mutate(error_message = "No overlapping SVs for a significant gene.")
     }
     if (nrow(candidate)) {
@@ -334,7 +357,8 @@
         suppressMessages(.sv_pgen_test_gene(
           pheno, Z, candidate$sv_type, lof[lof_by_gene[[id]], , drop = FALSE],
           lof_missing_as_noncarrier, covariates, covariate_cols, max_alt_af, max_missing, empty_status,
-          variants = if (!is.null(significant_genes)) pvar[candidate$pgen_index, , drop = FALSE]
+          variants = if (!is.null(significant_genes)) pvar[candidate$pgen_index, , drop = FALSE],
+          masks = masks
         ))
       }, error = function(e) mutate(result, status = "error", error_message = conditionMessage(e)))
     }
@@ -358,6 +382,7 @@
       option("--pgen"), option("--pvar"), option("--psam"), option("--phenotype-bed"), option("--gtf"),
       option("--lof"), option("--chromosome"), option("--covariates"), option("--covariate-cols"),
       option("--significant-genes"),
+      option("--sv-masks"),
       option("--window-padding-bp", type = "integer", default = 1000000L),
       option("--max-alt-af", type = "double", default = 0.01),
       option("--max-missing", type = "double", default = 0.05),
@@ -385,13 +410,15 @@
       paths[["LoF"]], opt$chromosome, gtf_path = gtf_path, window_padding_bp = opt$window_padding_bp,
       covariate_path = cov_path, covariate_cols = cov_cols, max_alt_af = opt$max_alt_af,
       max_missing = opt$max_missing, lof_missing_as_noncarrier = !opt$unknown_unlisted_lof,
-      missing_pgen_as_reference = opt$missing_pgen_as_reference, significant_genes = significant_genes
+      missing_pgen_as_reference = opt$missing_pgen_as_reference, significant_genes = significant_genes,
+      masks = .sv_pgen_parse_masks(opt$sv_masks)
     )
     file <- if (is.null(significant_genes)) "mask_results.tsv" else "single_variant_results.tsv"
     readr::write_tsv(results, file)
     message("Wrote ", nrow(results), " rows to ", file, ".")
   } else if (args[[1L]] == "gather") {
-    options <- list(option("--mask-list"), option("--manifest"), option("--fdr-method", default = "storey"))
+    options <- list(option("--mask-list"), option("--manifest"), option("--fdr-method", default = "storey"),
+                    option("--sv-masks"))
     opt <- optparse::parse_args(optparse::OptionParser(option_list = options), args = args[-1L],
                                convert_hyphens_to_underscores = TRUE)
     paths <- readLines(.sv_local_input(opt$mask_list, "mask result file list"), warn = FALSE)
@@ -405,7 +432,7 @@
         p_value = readr::col_double()
       ), show_col_types = FALSE)
     }) %>% list_rbind()
-    genes <- .sv_pgen_gene_results(raw, opt$fdr_method)
+    genes <- .sv_pgen_gene_results(raw, opt$fdr_method, .sv_pgen_parse_masks(opt$sv_masks))
     significant <- filter(genes, significant)
     readr::write_tsv(raw, "mask_results.tsv")
     readr::write_tsv(genes, "gene_results.tsv")

@@ -10,6 +10,20 @@ cds <- tibble(gene_id = "g1", chrom = "chr1", start = c(103L, 109L), end = c(104
 links <- .sv_pgen_interval_links(pvar, cds)
 stopifnot(identical(links$pgen_index, c(1L, 2L)))
 
+insertion <- tibble(CHROM = "1", POS = 105L, ID = "ins", REF = "N", ALT = "NAC",
+                    INFO = "SVTYPE=INS;SVLEN=50")
+insertion_windows <- tibble(gene_id = c("anchor", "neighbor"), chrom = "chr1",
+                            start = c(105L, 106L), end = c(105L, 106L))
+ins_masks <- .sv_pgen_parse_masks("INS, DEL+INS")
+stopifnot(
+  identical(names(ins_masks), c("INS", "DEL+INS")),
+  identical(.sv_pgen_interval_links(insertion, insertion_windows, ins_masks)$gene_id, "anchor"),
+  nrow(.sv_pgen_interval_links(insertion, insertion_windows)) == 0L
+)
+for (bad in c("", "DEL,,INS", "DEL+DEL", "DEL+DUP,DUP+DEL", "BND")) {
+  stopifnot(inherits(try(.sv_pgen_parse_masks(bad), silent = TRUE), "try-error"))
+}
+
 samples <- paste0("s", 1:7)
 expression <- tibble(sample_id = samples, phenotype = c(1, 2, 0, 3, -1, 4, 5))
 Z <- cbind(del = c(1L, 0L, 0L, 0L, 0L, 0L, 0L), dup = c(0L, 1L, NA, 0L, 0L, 0L, 0L))
