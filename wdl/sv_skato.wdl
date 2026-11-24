@@ -295,7 +295,7 @@ RARESV_MASK_PATHS
     File mask_results = "mask_results.tsv"
     File gene_results = "gene_results.tsv"
     File significant_genes = "significant_genes.tsv"
-    Array[Array[String]] follow_up_rows = read_tsv("follow_up_manifest.tsv")
+    Array[Array[String]] follow_up_rows = if size("follow_up_manifest.tsv", "B") > 0.0 then read_tsv("follow_up_manifest.tsv") else []
   }
 
   runtime {

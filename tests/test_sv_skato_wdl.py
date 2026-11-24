@@ -123,6 +123,23 @@ def check_commands(document, directory, files):
         ]
 
 
+def check_follow_up_rows(document, directory):
+    task = next(task for task in document.tasks if task.name == "gather_results")
+    output = next(output for output in task.outputs if output.name == "follow_up_rows")
+
+    class OutputStdLib(WDL.StdLib.Base):
+        def _devirtualize_filename(self, filename):
+            return str(directory / filename)
+
+    stdlib = OutputStdLib("1.0")
+    manifest = directory / "follow_up_manifest.tsv"
+    manifest.touch()
+    assert output.expr.eval(WDL.Env.Bindings(), stdlib).json == []
+    row = ["chr21", "gs://test/21.pgen", "gs://test/21.pvar", "gs://test/21.psam", "gs://test/21.bed"]
+    manifest.write_text("\t".join(row) + "\n", encoding="utf-8")
+    assert output.expr.eval(WDL.Env.Bindings(), stdlib).json == [row]
+
+
 def check_manifest(document, directory):
     manifest = directory / "chr21 manifest's $quoted path.tsv"
     uri = "gs://test/chr21_manifest.tsv"
@@ -207,6 +224,7 @@ def main():
     with TemporaryDirectory() as temp:
         files = check_manifest(document, Path(temp))
         check_commands(document, Path(temp), files)
+        check_follow_up_rows(document, Path(temp))
     print("PASS: workflow-scope file creation, TSV validation, and cloud-to-task file localization.")
 
 
