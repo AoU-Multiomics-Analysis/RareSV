@@ -60,7 +60,7 @@ def check_commands(document, directory, files):
 
     scan = dict(
         runtime,
-        files=files,
+        **files,
         cds_gtf=uris["gtf"],
         lof_table=uris["lof"],
         covariates=uris["cov"],
@@ -138,10 +138,16 @@ def check_manifest(document, directory):
     for declaration in scatter.body:
         if isinstance(declaration, WDL.Tree.Decl):
             env = env.bind(declaration.name, declaration.expr.eval(env, stdlib).coerce(declaration.type))
-    entry = env["entry"]
+    scan_task = next(task for task in document.tasks if task.name == "test_chromosome")
+    scan_call = next(node for node in scatter.body if isinstance(node, WDL.Tree.Call)
+                     and node.name == "test_chromosome")
+    scan_inputs = {"chromosome": scan_call.inputs["chromosome"].eval(env, stdlib).json}
     for key, uri_value in zip(("pgen", "pvar", "psam", "phenotype_bed"), fields[1:]):
-        assert isinstance(entry.value[key], WDL.Value.File)
-        assert entry.value[key].value == uri_value
+        assert isinstance(scan_task.required_inputs[key].type, WDL.Type.File)
+        value = scan_call.inputs[key].eval(env, stdlib)
+        assert isinstance(value, WDL.Value.File)
+        assert value.value == uri_value
+        scan_inputs[key] = value.json
 
     manifest.write_text(header + row + row.replace("\tchr21\t", "\t21\t"), encoding="utf-8")
     duplicate = subprocess.run(["bash", "-c", rendered], cwd=directory, capture_output=True, text=True)
@@ -155,7 +161,7 @@ def check_manifest(document, directory):
     unresolved = render_command(task, inputs, {uri: uri}, directory)
     result = subprocess.run(["bash", "-c", unresolved], cwd=directory, capture_output=True, text=True)
     assert result.returncode and "Localization error for chromosome manifest" in result.stderr
-    return entry.json
+    return scan_inputs
 
 
 def main():

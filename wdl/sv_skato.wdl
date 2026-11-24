@@ -1,13 +1,5 @@
 version 1.0
 
-struct ChromosomeInputs {
-  String chromosome
-  File pgen
-  File pvar
-  File psam
-  File phenotype_bed
-}
-
 workflow sv_skato {
   input {
     File chromosome_manifest
@@ -38,17 +30,13 @@ workflow sv_skato {
     File pvar_file = row[2]
     File psam_file = row[3]
     File phenotype_bed_file = row[4]
-    ChromosomeInputs entry = object {
-      chromosome: row[0],
-      pgen: pgen_file,
-      pvar: pvar_file,
-      psam: psam_file,
-      phenotype_bed: phenotype_bed_file
-    }
-
     call test_chromosome {
       input:
-        files = entry,
+        chromosome = row[0],
+        pgen = pgen_file,
+        pvar = pvar_file,
+        psam = psam_file,
+        phenotype_bed = phenotype_bed_file,
         cds_gtf = cds_gtf,
         lof_table = lof_table,
         covariates = covariates,
@@ -156,7 +144,11 @@ task parse_manifest {
 
 task test_chromosome {
   input {
-    ChromosomeInputs files
+    String chromosome
+    File pgen
+    File pvar
+    File psam
+    File phenotype_bed
     File? cds_gtf
     File lof_table
     File? covariates
@@ -173,7 +165,7 @@ task test_chromosome {
   command <<<
     set -euo pipefail
     export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-    chromosome='~{sub(files.chromosome, "'", "'\"'\"'")}'
+    chromosome='~{sub(chromosome, "'", "'\"'\"'")}'
     cds_annotation='~{if defined(cds_gtf) then sub(select_first([cds_gtf]), "'", "'\"'\"'") else ""}'
     covariate_file='~{if defined(covariates) then sub(select_first([covariates]), "'", "'\"'\"'") else ""}'
     covariate_names='~{sub(covariate_columns, "'", "'\"'\"'")}'
@@ -194,10 +186,10 @@ task test_chromosome {
     printf 'Starting LoF-adjusted SKAT-O for chromosome %s\n' "$chromosome" >&2
     Rscript /opt/sv-skato/sv_pgen_workflow.R scan \
       --chromosome "$chromosome" \
-      --pgen '~{sub(files.pgen, "'", "'\"'\"'")}' \
-      --pvar '~{sub(files.pvar, "'", "'\"'\"'")}' \
-      --psam '~{sub(files.psam, "'", "'\"'\"'")}' \
-      --phenotype-bed '~{sub(files.phenotype_bed, "'", "'\"'\"'")}' \
+      --pgen '~{sub(pgen, "'", "'\"'\"'")}' \
+      --pvar '~{sub(pvar, "'", "'\"'\"'")}' \
+      --psam '~{sub(psam, "'", "'\"'\"'")}' \
+      --phenotype-bed '~{sub(phenotype_bed, "'", "'\"'\"'")}' \
       --lof '~{sub(lof_table, "'", "'\"'\"'")}' \
       --window-padding-bp '~{window_padding_bp}' \
       --max-alt-af '~{max_alt_af}' --max-missing '~{max_missing}' \
