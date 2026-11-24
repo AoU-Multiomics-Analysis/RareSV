@@ -1,4 +1,4 @@
-FROM mambaorg/micromamba:2.3.2-debian12
+FROM mambaorg/micromamba:2.10.0@sha256:e1476182cd40eb1f7c0cfae4adec9bfd78f3d7f05c61368306abfdc8939c1198
 
 RUN micromamba install --yes --name base --strict-channel-priority \
     -c conda-forge -c bioconda \
@@ -14,3 +14,9 @@ RUN micromamba install --yes --name base --strict-channel-priority \
 
 ENV PATH="/opt/conda/bin:${PATH}"
 COPY R/sv_set_tests.R R/sv_pgen_workflow.R /opt/sv-skato/
+
+# Match the image that passed the Workbench startup test.
+USER root
+WORKDIR /work
+ENTRYPOINT []
+CMD ["bash"]
