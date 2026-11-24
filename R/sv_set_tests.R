@@ -1123,15 +1123,19 @@ run_sv_set_followup <- function(set_result, original_vcf_file = NULL, tabix_path
   if (!is.null(original_vcf_file)) out <- restore_sv_followup_ids(out, original_vcf_file, tabix_path)
   if (!length(ids)) return(out)
 
-  formula <- stats::as.formula(set_result$settings$null_formula)
+  model_data <- list(data = data, formula = stats::as.formula(set_result$settings$null_formula))
+  .sv_fit_followup(out, Z[, ids, drop = FALSE], model_data)
+}
+
+.sv_fit_followup <- function(out, dosage, model_data) {
+  formula <- model_data$formula
   if (".sv_dosage" %in% all.vars(formula)) stop("Choose a different name for the .sv_dosage covariate.")
-  model_data <- list(data = data, formula = stats::update(formula, . ~ . + .sv_dosage))
-  dosage <- Z[, ids, drop = FALSE]
+  model_data$formula <- stats::update(formula, . ~ . + .sv_dosage)
   out <- out %>% mutate(
     n_samples = nrow(dosage), carriers = as.integer(colSums(dosage > 0, na.rm = TRUE)),
     alt_af = colMeans(dosage, na.rm = TRUE) / 2, missing_rate = colMeans(is.na(dosage))
   )
-  purrr::map(seq_along(ids), function(i) {
+  purrr::map(seq_len(ncol(dosage)), function(i) {
     row <- out[i, ]
     tryCatch(.sv_fit_target_dosage(row, dosage[, i], model_data), error = function(e) {
       row$error_message <- conditionMessage(e)

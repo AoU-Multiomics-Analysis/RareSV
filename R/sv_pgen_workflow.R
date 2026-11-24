@@ -55,9 +55,23 @@
          n_svs_tested = 0L, p_value = NA_real_, warnings = NA_character_)
 }
 
+.sv_pgen_followup_rows <- function(variant_id = character()) {
+  tibble(variant_id = variant_id, sv_type = NA_character_, tested_masks = NA_character_) %>%
+    .sv_target_output() %>%
+    dplyr::select(-region) %>%
+    mutate(REF = NA_character_, INFO_END = NA_real_, n_lof_carriers = NA_integer_,
+           lof_covariate_used = NA)
+}
+
+.sv_pgen_empty_followup <- function() {
+  .sv_pgen_followup_rows() %>%
+    mutate(gene_id = NA_character_, gene_symbol = NA_character_, chromosome = NA_character_, .before = 1L) %>%
+    mutate(gene_p_value = NA_real_, gene_q_value = NA_real_)
+}
+
 .sv_pgen_test_gene <- function(pheno, Z, sv_types, lof_status, lof_missing_as_noncarrier,
                                covariates, covariate_cols, max_alt_af, max_missing,
-                               empty_status = "no_overlapping_sv") {
+                               empty_status = "no_overlapping_sv", variants = NULL) {
   rows <- .sv_pgen_mask_rows(empty_status)
   if (!ncol(Z)) return(rows)
   model <- .sv_model_data(pheno, covariates, covariate_cols)
@@ -74,8 +88,9 @@
            n_lof_missing = model$lof_qc$n_lof_missing,
            n_lof_carriers = model$lof_qc$n_lof_carriers,
            lof_covariate_used = model$lof_qc$lof_covariate_used)
-  map(seq_len(nrow(rows)), function(i) {
+  rows <- map(seq_len(nrow(rows)), function(i) {
     row <- rows[i, ]
+    if (!is.null(variants)) row$tested_ids <- list(character())
     in_mask <- sv_types %in% .sv_pgen_masks[[row$sv_mask]]
     eligible <- in_mask & keep
     row$n_svs_in_mask <- sum(in_mask)
@@ -85,14 +100,22 @@
     if (!any(eligible)) return(row)
     warnings <- character()
     row <- tryCatch(withCallingHandlers({
-      fit <- .sv_run_skat(Z[, eligible, drop = FALSE], null_model, "SKATO", max_missing)
+      mask_genotypes <- Z[, eligible, drop = FALSE]
+      fit <- .sv_run_skat(mask_genotypes, null_model, "SKATO", max_missing)
       p <- fit$p.value
       n_tested <- fit$param$n.marker.test
       if (length(n_tested) != 1L || !is.finite(n_tested) || n_tested < 1L ||
           length(p) != 1L || !is.finite(p) || p < 0 || p > 1) {
         stop("SKAT-O returned an invalid p-value or tested zero SVs.")
       }
-      mutate(row, status = "ok", n_svs_tested = as.integer(n_tested), p_value = p)
+      row <- mutate(row, status = "ok", n_svs_tested = as.integer(n_tested), p_value = p)
+      if (!is.null(variants)) {
+        row$tested_ids <- list(.sv_tested_variant_ids(list(
+          summary = row, Z_filtered = mask_genotypes, test_result = fit,
+          settings = list(max_missing = max_missing), variants = variants
+        )))
+      }
+      row
     }, warning = function(w) {
       warnings <<- c(warnings, conditionMessage(w))
       invokeRestart("muffleWarning")
@@ -100,6 +123,24 @@
     if (length(warnings)) row$warnings <- str_c(unique(warnings), collapse = " | ")
     row
   }) %>% list_rbind()
+
+  if (is.null(variants)) return(rows)
+  if (any(rows$status == "error")) {
+    stop("Cannot recover SKAT-O membership: ", paste(unique(na.omit(rows$error_message)), collapse = " | "))
+  }
+  ids <- unique(unlist(rows$tested_ids, use.names = FALSE))
+  if (!length(ids)) stop("No SKAT-O variants remain for a significant gene.")
+  records <- variants[match(ids, variants$ID), , drop = FALSE]
+  out <- .sv_pgen_followup_rows(ids) %>%
+    mutate(
+      sv_type = sv_types[match(ids, colnames(Z))],
+      tested_masks = map_chr(ids, ~ paste(rows$sv_mask[map_lgl(rows$tested_ids, \(set) .x %in% set)],
+                                           collapse = ",")),
+      CHROM = records$CHROM, POS = as.integer(records$POS), REF = records$REF, ALT = records$ALT,
+      INFO_END = .sv_info_end(records$INFO),
+      n_lof_carriers = model$lof_qc$n_lof_carriers, lof_covariate_used = model$lof_qc$lof_covariate_used
+    )
+  .sv_fit_followup(out, Z[, ids, drop = FALSE], model)
 }
 
 .sv_cauchy_p <- function(p) {
@@ -183,7 +224,7 @@
                           gtf_path = NULL, window_padding_bp = 1000000L,
                           covariate_path = NULL, covariate_cols = character(),
                           max_alt_af = 0.01, max_missing = 0.05, lof_missing_as_noncarrier = TRUE,
-                          missing_pgen_as_reference = FALSE) {
+                          missing_pgen_as_reference = FALSE, significant_genes = NULL) {
   stopifnot(length(chromosome) == 1L, !is.na(chromosome), nzchar(chromosome),
             is.finite(max_alt_af), max_alt_af > 0, max_alt_af <= 1,
             is.finite(max_missing), max_missing >= 0, max_missing <= 1,
@@ -232,6 +273,16 @@
   empty_status <- if (is.null(gtf_path)) "no_overlapping_sv" else "no_cds_sv"
   selected <- which(trait_keys %in% intervals$gene_id)
   if (!length(selected)) stop("No phenotype BED rows match CDS genes on chromosome ", chromosome, ".")
+  if (!is.null(significant_genes)) {
+    significant_genes <- filter(significant_genes, .sv_pgen_chr(.data$chromosome) == .env$chr)
+    if (anyDuplicated(significant_genes$gene_id) ||
+        any(!significant_genes$gene_id %in% trait_keys[selected])) {
+      stop("Significant gene IDs must match distinct eligible genes on chromosome ", chromosome, ".")
+    }
+    selected <- selected[trait_keys[selected] %in% significant_genes$gene_id]
+    if (!length(selected)) return(.sv_pgen_empty_followup())
+    intervals <- filter(intervals, .data$gene_id %in% .env$trait_keys[.env$selected])
+  }
   symbols <- if ("gene_symbol" %in% names(traits)) .sv_gene_label(traits$gene_symbol) else
     rep(NA_character_, nrow(traits))
   if ("gene_symbol" %in% names(intervals)) {
@@ -269,7 +320,9 @@
   map(selected, function(index) {
     id <- trait_keys[[index]]
     candidate <- links[links_by_gene[[id]], , drop = FALSE]
-    result <- .sv_pgen_mask_rows(empty_status)
+    result <- if (is.null(significant_genes)) .sv_pgen_mask_rows(empty_status) else {
+      .sv_pgen_followup_rows(NA_character_) %>% mutate(error_message = "No overlapping SVs for a significant gene.")
+    }
     if (nrow(candidate)) {
       result <- tryCatch({
         pheno <- suppressMessages(prep_burden_phenotype(
@@ -280,9 +333,15 @@
         dimnames(Z) <- list(sample_ids, pvar$ID[candidate$pgen_index])
         suppressMessages(.sv_pgen_test_gene(
           pheno, Z, candidate$sv_type, lof[lof_by_gene[[id]], , drop = FALSE],
-          lof_missing_as_noncarrier, covariates, covariate_cols, max_alt_af, max_missing, empty_status
+          lof_missing_as_noncarrier, covariates, covariate_cols, max_alt_af, max_missing, empty_status,
+          variants = if (!is.null(significant_genes)) pvar[candidate$pgen_index, , drop = FALSE]
         ))
       }, error = function(e) mutate(result, status = "error", error_message = conditionMessage(e)))
+    }
+    if (!is.null(significant_genes)) {
+      hit <- match(id, significant_genes$gene_id)
+      result <- mutate(result, gene_p_value = significant_genes$p_value[[hit]],
+                       gene_q_value = significant_genes$q_value[[hit]])
     }
     result %>% mutate(gene_id = .env$id, gene_symbol = .env$symbols[[index]],
                       chromosome = .env$chr, .before = 1L)
@@ -291,11 +350,14 @@
 
 .sv_pgen_main <- function(args) {
   option <- optparse::make_option
-  if (!length(args) || !args[[1L]] %in% c("scan", "gather")) stop("Specify scan or gather.")
+  if (!length(args) || !args[[1L]] %in% c("scan", "gather", "gather-follow-up")) {
+    stop("Specify scan, gather, or gather-follow-up.")
+  }
   if (args[[1L]] == "scan") {
     options <- list(
       option("--pgen"), option("--pvar"), option("--psam"), option("--phenotype-bed"), option("--gtf"),
       option("--lof"), option("--chromosome"), option("--covariates"), option("--covariate-cols"),
+      option("--significant-genes"),
       option("--window-padding-bp", type = "integer", default = 1000000L),
       option("--max-alt-af", type = "double", default = 0.01),
       option("--max-missing", type = "double", default = 0.05),
@@ -312,17 +374,24 @@
     if (xor(!is.null(cov_path), length(cov_cols) > 0L)) {
       stop("Supply both a covariate file and the covariate column names.")
     }
+    significant_genes <- if (!is.null(opt$significant_genes)) {
+      readr::read_tsv(.sv_local_input(opt$significant_genes, "significant genes"),
+                      col_types = readr::cols(.default = readr::col_skip(),
+                        gene_id = readr::col_character(), chromosome = readr::col_character(),
+                        p_value = readr::col_double(), q_value = readr::col_double()))
+    }
     results <- .sv_pgen_scan(
       paths[["PGEN"]], paths[["PVAR"]], paths[["PSAM"]], paths[["phenotype BED"]],
       paths[["LoF"]], opt$chromosome, gtf_path = gtf_path, window_padding_bp = opt$window_padding_bp,
       covariate_path = cov_path, covariate_cols = cov_cols, max_alt_af = opt$max_alt_af,
       max_missing = opt$max_missing, lof_missing_as_noncarrier = !opt$unknown_unlisted_lof,
-      missing_pgen_as_reference = opt$missing_pgen_as_reference
+      missing_pgen_as_reference = opt$missing_pgen_as_reference, significant_genes = significant_genes
     )
-    readr::write_tsv(results, "mask_results.tsv")
-    message("Wrote ", nrow(results), " gene-mask rows.")
-  } else {
-    options <- list(option("--mask-list"), option("--fdr-method", default = "storey"))
+    file <- if (is.null(significant_genes)) "mask_results.tsv" else "single_variant_results.tsv"
+    readr::write_tsv(results, file)
+    message("Wrote ", nrow(results), " rows to ", file, ".")
+  } else if (args[[1L]] == "gather") {
+    options <- list(option("--mask-list"), option("--manifest"), option("--fdr-method", default = "storey"))
     opt <- optparse::parse_args(optparse::OptionParser(option_list = options), args = args[-1L],
                                convert_hyphens_to_underscores = TRUE)
     paths <- readLines(.sv_local_input(opt$mask_list, "mask result file list"), warn = FALSE)
@@ -337,10 +406,34 @@
       ), show_col_types = FALSE)
     }) %>% list_rbind()
     genes <- .sv_pgen_gene_results(raw, opt$fdr_method)
+    significant <- filter(genes, significant)
     readr::write_tsv(raw, "mask_results.tsv")
     readr::write_tsv(genes, "gene_results.tsv")
-    readr::write_tsv(filter(genes, significant), "significant_genes.tsv")
-    message("Gathered ", nrow(genes), " genes and found ", sum(genes$significant), " discoveries at 5% FDR.")
+    readr::write_tsv(significant, "significant_genes.tsv")
+    message("Gathered ", nrow(genes), " genes and found ", nrow(significant), " discoveries at 5% FDR.")
+    if (!is.null(opt$manifest)) {
+      manifest <- readr::read_tsv(.sv_local_input(opt$manifest, "parsed chromosome manifest"),
+                                  col_names = FALSE, col_types = "ccccc", quote = "")
+      if (ncol(manifest) != 5L) stop("The parsed chromosome manifest must have five columns.")
+      follow_up <- manifest[.sv_pgen_chr(manifest[[1L]]) %in% significant$chromosome, , drop = FALSE]
+      readr::write_tsv(follow_up, "follow_up_manifest.tsv", col_names = FALSE, quote = "none")
+      message("Selected ", nrow(follow_up), " chromosomes for follow-up.")
+    }
+  } else {
+    options <- list(option("--follow-up-list"))
+    opt <- optparse::parse_args(optparse::OptionParser(option_list = options), args = args[-1L],
+                               convert_hyphens_to_underscores = TRUE)
+    paths <- readLines(.sv_local_input(opt$follow_up_list, "follow-up file list"), warn = FALSE)
+    paths <- map_chr(paths, .sv_local_input, label = "single-variant results")
+    shards <- map(paths, ~ readr::read_tsv(.x, col_types = readr::cols(
+      .default = readr::col_guess(), gene_id = readr::col_character(),
+      gene_symbol = readr::col_character(), chromosome = readr::col_character(),
+      variant_id = readr::col_character(), CHROM = readr::col_character(),
+      REF = readr::col_character(), ALT = readr::col_character()
+    )))
+    results <- bind_rows(.sv_pgen_empty_followup(), shards)
+    readr::write_tsv(results, "single_variant_results.tsv")
+    message("Gathered ", nrow(results), " single-variant follow-up rows.")
   }
 }
 

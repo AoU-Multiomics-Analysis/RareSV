@@ -50,7 +50,12 @@ run_smoke <- function() {
     }
     list(exact = scan(window_padding_bp = 0L), padded = scan(window_padding_bp = 1L),
          default = scan(), reference = scan(missing_pgen_as_reference = TRUE),
-         cds = scan(gtf_path = gtf))
+         cds = scan(gtf_path = gtf),
+         follow_up = scan(
+           missing_pgen_as_reference = TRUE,
+           significant_genes = tibble(gene_id = gene_ids[[1L]], chromosome = "chr1",
+                                      p_value = 0.01, q_value = 0.02)
+         ))
   })
   bed_masks <- map(scans, "exact") %>% list_rbind()
   bed_genes <- .sv_pgen_gene_results(bed_masks, "BH")
@@ -76,6 +81,16 @@ run_smoke <- function() {
     all(masks$n_lof_carriers == 1L), all(masks$lof_covariate_used),
     identical(masks$n_svs_tested, rep(c(2L, 2L, 4L), 2)),
     nrow(genes) == 2L, all(is.finite(genes$p_value)), all(is.finite(genes$q_value))
+  )
+  follow_up <- map(scans, "follow_up") %>% list_rbind()
+  stopifnot(
+    nrow(follow_up) == 5L, all(follow_up$gene_id == gene_ids[[1L]]),
+    setequal(follow_up$variant_id, paste0("sv", 1:5)),
+    follow_up$tested_masks[follow_up$variant_id == "sv5"] == "DEL,DEL+DUP",
+    all(follow_up$gene_q_value == 0.02), all(follow_up$n_samples == 24L),
+    all(follow_up$lof_covariate_used), all(follow_up$status == "ok"),
+    all(is.finite(follow_up$beta)), all(is.finite(follow_up$p_value)),
+    nrow(scans[[2L]]$follow_up) == 0L
   )
   cat("PASS: split BEDs, BED and CDS overlaps, pgenlibr hard calls, and two-chromosome gathering.\n")
 }

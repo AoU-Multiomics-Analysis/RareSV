@@ -30,7 +30,8 @@ test_env$.sv_run_skat <- function(Z, null_model, test, max_missing) {
   stopifnot(null_model == "adjusted null", test == "SKATO",
             identical(rownames(Z), samples[1:6]))
   mask_calls[[length(mask_calls) + 1L]] <<- colnames(Z)
-  list(p.value = 0.02, param = list(n.marker.test = ncol(Z)))
+  list(p.value = 0.02, param = list(n.marker.test = ncol(Z)),
+       test.snp.mac = set_names(rep(1, ncol(Z)), colnames(Z)))
 }
 result <- test_env$.sv_pgen_test_gene(
   expression, Z, c("DEL", "DUP"), lof, TRUE, NULL, character(), 0.2, 0.2
@@ -40,6 +41,17 @@ stopifnot(
   identical(result$sv_mask, c("DEL", "DUP", "DEL+DUP")),
   identical(result$n_svs_tested, c(1L, 1L, 2L)),
   all(result$n_samples == 6L), all(result$n_lof_carriers == 1L)
+)
+follow <- test_env$.sv_pgen_test_gene(
+  expression, Z, c("DEL", "DUP"), lof, TRUE, NULL, character(), 0.2, 0.2,
+  variants = pvar[1:2, ]
+)
+stopifnot(
+  identical(follow$variant_id, c("del", "dup")),
+  identical(follow$tested_masks, c("DEL,DEL+DUP", "DUP,DEL+DUP")),
+  identical(follow$status, c("error", "ok")),
+  all(follow$n_samples == 6L), all(follow$lof_covariate_used),
+  is.finite(follow$p_value[[2L]])
 )
 stopifnot(
   isTRUE(all.equal(.sv_cauchy_p(c(.01, .04)), .01600759, tolerance = 1e-6)),
@@ -94,10 +106,19 @@ test_pgen_cli <- function() {
   run <- function(...) {
     suppressWarnings(system2(runner, shQuote(c(script, ...)), stdout = TRUE, stderr = TRUE))
   }
-  result <- run("gather", "--mask-list", "files.txt", "--fdr-method", "BH")
+  first <- "chr1\tgs://test/1.pgen\tgs://test/1.pvar\tgs://test/1.psam\tgs://test/1.bed"
+  second <- "chr2\tgs://test/2.pgen\tgs://test/2.pvar\tgs://test/2.psam\tgs://test/2.bed"
+  writeLines(c(first, second), "manifest.tsv")
+  result <- run("gather", "--mask-list", "files.txt", "--manifest", "manifest.tsv", "--fdr-method", "BH")
   stopifnot(is.null(attr(result, "status")))
   genes <- read_tsv("gene_results.tsv", show_col_types = FALSE)
-  stopifnot(identical(genes$q_value, c(0.02, NA_real_)))
+  stopifnot(identical(genes$q_value, c(0.02, NA_real_)),
+            identical(readLines("follow_up_manifest.tsv"), first))
+  writeLines(character(), "empty-list.txt")
+  result <- run("gather-follow-up", "--follow-up-list", "empty-list.txt")
+  stopifnot(is.null(attr(result, "status")))
+  empty <- read_tsv("single_variant_results.tsv", show_col_types = FALSE)
+  stopifnot(nrow(empty) == 0L, identical(names(empty), names(.sv_pgen_empty_followup())))
   unresolved <- run("scan", "--pgen", "gs://test/genotypes.pgen")
   stopifnot(attr(unresolved, "status") != 0L,
             any(grepl("Localization error for PGEN: unresolved URI", unresolved, fixed = TRUE)))
@@ -114,6 +135,9 @@ test_pgen_cli <- function() {
   unresolved <- run("gather", "--mask-list", "files.txt")
   stopifnot(attr(unresolved, "status") != 0L,
             any(grepl("Localization error for mask results: unresolved URI", unresolved, fixed = TRUE)))
+  unresolved <- run("gather-follow-up", "--follow-up-list", "files.txt")
+  stopifnot(attr(unresolved, "status") != 0L,
+            any(grepl("Localization error for single-variant results: unresolved URI", unresolved, fixed = TRUE)))
 }
 test_pgen_cli()
 
