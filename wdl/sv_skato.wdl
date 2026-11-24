@@ -8,11 +8,12 @@ workflow sv_skato {
     File? covariates
     String covariate_columns = ""
     Boolean lof_missing_as_noncarrier = true
+    Boolean missing_pgen_as_reference = false
     Int window_padding_bp = 1000000
     Float max_alt_af = 0.01
     Float max_missing = 0.05
     String fdr_method = "storey"
-    String docker_image = "docker.io/epadhi/raresv:workbench-r-utils-2.13.0"
+    String docker_image = "docker.io/epadhi/raresv:workbench-missing-gt-662e268"
     String scan_memory = "12 GB"
     Int scan_disk_gb = 100
     String gather_memory = "4 GB"
@@ -42,6 +43,7 @@ workflow sv_skato {
         covariates = covariates,
         covariate_columns = covariate_columns,
         lof_missing_as_noncarrier = lof_missing_as_noncarrier,
+        missing_pgen_as_reference = missing_pgen_as_reference,
         window_padding_bp = window_padding_bp,
         max_alt_af = max_alt_af,
         max_missing = max_missing,
@@ -154,6 +156,7 @@ task test_chromosome {
     File? covariates
     String covariate_columns
     Boolean lof_missing_as_noncarrier
+    Boolean missing_pgen_as_reference
     Int window_padding_bp
     Float max_alt_af
     Float max_missing
@@ -181,6 +184,9 @@ task test_chromosome {
     fi
     if [[ '~{lof_missing_as_noncarrier}' == false ]]; then
       extra_args+=(--unknown-unlisted-lof)
+    fi
+    if [[ '~{missing_pgen_as_reference}' == true ]]; then
+      extra_args+=(--missing-pgen-as-reference)
     fi
 
     printf 'Starting LoF-adjusted SKAT-O for chromosome %s\n' "$chromosome" >&2

@@ -13,6 +13,8 @@ def main():
     parser.add_argument("--cds-gtf", help="Use annotated CDS intervals for SV overlap")
     parser.add_argument("--window-padding-bp", type=int, help="Padding per side for phenotype BED intervals")
     parser.add_argument("--lof-table", required=True)
+    parser.add_argument("--missing-pgen-as-reference", action="store_true",
+                        help="Treat all missing PGEN hard calls as reference before genotype QC")
     parser.add_argument("--docker-image", help="Override the WDL's default RareSV image")
     parser.add_argument("--covariates")
     parser.add_argument("--covariate-columns", help="Comma-delimited column names")
@@ -32,6 +34,8 @@ def main():
     }
     if args.docker_image:
         inputs["sv_skato.docker_image"] = args.docker_image
+    if args.missing_pgen_as_reference:
+        inputs["sv_skato.missing_pgen_as_reference"] = True
     if args.cds_gtf:
         inputs["sv_skato.cds_gtf"] = args.cds_gtf
     if args.window_padding_bp is not None:

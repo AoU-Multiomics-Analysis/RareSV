@@ -182,10 +182,13 @@
 .sv_pgen_scan <- function(pgen_path, pvar_path, psam_path, phenotype_bed_path, lof_path, chromosome,
                           gtf_path = NULL, window_padding_bp = 1000000L,
                           covariate_path = NULL, covariate_cols = character(),
-                          max_alt_af = 0.01, max_missing = 0.05, lof_missing_as_noncarrier = TRUE) {
+                          max_alt_af = 0.01, max_missing = 0.05, lof_missing_as_noncarrier = TRUE,
+                          missing_pgen_as_reference = FALSE) {
   stopifnot(length(chromosome) == 1L, !is.na(chromosome), nzchar(chromosome),
             is.finite(max_alt_af), max_alt_af > 0, max_alt_af <= 1,
-            is.finite(max_missing), max_missing >= 0, max_missing <= 1)
+            is.finite(max_missing), max_missing >= 0, max_missing <= 1,
+            is.logical(missing_pgen_as_reference), length(missing_pgen_as_reference) == 1L,
+            !is.na(missing_pgen_as_reference))
   if (!is.numeric(window_padding_bp) || length(window_padding_bp) != 1L ||
       !is.finite(window_padding_bp) || window_padding_bp < 0 ||
       window_padding_bp != floor(window_padding_bp) || window_padding_bp > .Machine$integer.max) {
@@ -259,6 +262,9 @@
   }
   message("Chromosome ", chromosome, ": ", length(selected), " genes and ",
           length(sample_ids), " matched sample columns.")
+  if (missing_pgen_as_reference) {
+    message("Treating missing PGEN hard calls as reference before genotype QC.")
+  }
 
   map(selected, function(index) {
     id <- trait_keys[[index]]
@@ -270,6 +276,7 @@
           traits[index, ], traits$gene_id[[index]], "gene_id", sample_ids
         ))
         Z <- pgenlibr::ReadIntList(pgen, candidate$pgen_index)
+        if (missing_pgen_as_reference) Z[is.na(Z)] <- 0L
         dimnames(Z) <- list(sample_ids, pvar$ID[candidate$pgen_index])
         suppressMessages(.sv_pgen_test_gene(
           pheno, Z, candidate$sv_type, lof[lof_by_gene[[id]], , drop = FALSE],
@@ -292,6 +299,7 @@
       option("--window-padding-bp", type = "integer", default = 1000000L),
       option("--max-alt-af", type = "double", default = 0.01),
       option("--max-missing", type = "double", default = 0.05),
+      option("--missing-pgen-as-reference", action = "store_true", default = FALSE),
       option("--unknown-unlisted-lof", action = "store_true", default = FALSE)
     )
     opt <- optparse::parse_args(optparse::OptionParser(option_list = options), args = args[-1L],
@@ -308,7 +316,8 @@
       paths[["PGEN"]], paths[["PVAR"]], paths[["PSAM"]], paths[["phenotype BED"]],
       paths[["LoF"]], opt$chromosome, gtf_path = gtf_path, window_padding_bp = opt$window_padding_bp,
       covariate_path = cov_path, covariate_cols = cov_cols, max_alt_af = opt$max_alt_af,
-      max_missing = opt$max_missing, lof_missing_as_noncarrier = !opt$unknown_unlisted_lof
+      max_missing = opt$max_missing, lof_missing_as_noncarrier = !opt$unknown_unlisted_lof,
+      missing_pgen_as_reference = opt$missing_pgen_as_reference
     )
     readr::write_tsv(results, "mask_results.tsv")
     message("Wrote ", nrow(results), " gene-mask rows.")
